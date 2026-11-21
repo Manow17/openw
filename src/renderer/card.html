@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'">
+  <title>OpenW profile card</title>
+  <style>
+    @font-face { font-family: "Outfit"; src: url("../../assets/fonts/outfit.woff2") format("woff2"); font-weight: 100 900; }
+    @font-face { font-family: "DM Sans"; src: url("../../assets/fonts/dm-sans.woff2") format("woff2"); font-weight: 100 1000; }
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; color: #f1f2f4; font: 13px/1.3 "DM Sans", "Segoe UI", sans-serif; }
+    body { display: flex; justify-content: center; align-items: center; }
+    /* drawn at 380x110 and scaled to the window, so the size setting scales everything */
+    #stage { width: 380px; height: 110px; flex: none; display: flex; justify-content: center; align-items: center; transform-origin: center; }
+    #card { display: flex; align-items: center; gap: 14px; height: 84px; max-width: 350px; min-width: 200px; padding: 0 20px 0 12px; box-sizing: border-box;
+      border-radius: 20px; background: rgba(14, 15, 18, .86); border: 1px solid rgba(255, 255, 255, .09); transition: opacity .45s; }
+    #pic { width: 60px; height: 60px; border-radius: 16px; flex: none; background: #2b2e35 center / cover; display: grid; place-items: center; font: 700 26px "Outfit", sans-serif; color: #c8ccd4; }
+    #text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    #name { font: 700 19px/1.15 "Outfit", sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #title { font: 700 11.5px/1.2 "Outfit", sans-serif; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #rank { align-self: flex-start; padding: 2px 8px; border-radius: 6px; background: rgba(255, 255, 255, .1); font-size: 11px; font-weight: 600; color: #c8ccd4; }
+    #rank:empty { display: none; }
+    /* "Move overlays": the window can be dragged and shows where it is */
+    body.edit { -webkit-app-region: drag; cursor: move; outline: 2px dashed #00d8c8; outline-offset: -2px; border-radius: 14px; background: rgba(14, 15, 18, .45); }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <div id="card">
+      <div id="pic"></div>
+      <div id="text"><span id="name"></span><span id="title"></span><span id="rank"></span></div>
+    </div>
+  </div>
+  <script src="card.js"></script>
+</body>
+</html>

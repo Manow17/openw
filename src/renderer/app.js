@@ -1120,17 +1120,25 @@ const PAD_LOOKS = [
 ];
 const GLOWS = ['#00d8c8', '#38bdf8', '#818cf8', '#f472b6', '#fb7185', '#fb923c', '#facc15', '#a3e635', '#ffffff'];
 
+// One overlay's settings, changed and saved; and its position and size rows (Overlay and Profile pages).
+const overlayUpd = (kind, patch) => { const o = S.settings.overlay; return set('overlay', { ...o, [kind]: { ...o[kind], ...patch } }); };
+const overlayPlace = (kind) => {
+  const o = S.settings.overlay;
+  return h('div', { class: 'opt-row' }, h('div', { class: 'grow' }, h('b', {}, 'Position'), h('div', { class: 'muted small' }, o[kind].x == null ? 'Default place. Pick a corner, or use Move overlays to drag it.' : `Custom: ${o[kind].x}, ${o[kind].y}`)),
+    select([['', o[kind].x == null ? 'Default' : 'Custom'], ...ANCHORS, ...(o[kind].x == null ? [] : [['reset', 'Back to default']])], '', (anchor) => anchor && run(() => api('overlayAnchor', kind, anchor)), 170));
+};
+const overlaySizeRow = (kind, min, max) => {
+  const o = S.settings.overlay;
+  const label = h('div', { class: 'muted small' }, `${o[kind].size}%`);
+  const range = slider(min, max, o[kind].size, (v) => overlayUpd(kind, { size: v }), (v) => { label.textContent = `${v}%`; });
+  return h('div', { class: 'opt-row' }, h('div', { style: 'width:120px' }, h('b', {}, 'Size'), h('div', {}, typeable(label, range))), range);
+};
+
 views.overlay = () => {
   const o = S.settings.overlay, moving = S.overlayMove;
-  const upd = (kind, patch) => set('overlay', { ...o, [kind]: { ...o[kind], ...patch } });
+  const upd = overlayUpd;
   if (!sources) api('mediaSources').then((list) => { sources = list; if (ui.tab === 'overlay') render(); });
-  const place = (kind) => h('div', { class: 'opt-row' }, h('div', { class: 'grow' }, h('b', {}, 'Position'), h('div', { class: 'muted small' }, o[kind].x == null ? 'Default place. Pick a corner, or use Move overlays to drag it.' : `Custom: ${o[kind].x}, ${o[kind].y}`)),
-    select([['', o[kind].x == null ? 'Default' : 'Custom'], ...ANCHORS, ...(o[kind].x == null ? [] : [['reset', 'Back to default']])], '', (anchor) => anchor && run(() => api('overlayAnchor', kind, anchor)), 170));
-  const sizeRow = (kind, min, max) => {
-    const label = h('div', { class: 'muted small' }, `${o[kind].size}%`);
-    const range = slider(min, max, o[kind].size, (v) => upd(kind, { size: v }), (v) => { label.textContent = `${v}%`; });
-    return h('div', { class: 'opt-row' }, h('div', { style: 'width:120px' }, h('b', {}, 'Size'), h('div', {}, typeable(label, range))), range);
-  };
+  const place = overlayPlace, sizeRow = overlaySizeRow;
 
   // --- music ---
   const cover = h('div', { class: 'cover sm' }), name = h('b', { class: 'clip' }), artist = h('div', { class: 'muted small clip' }), fill = h('i'), time = h('span', { class: 'muted small' });
@@ -1210,11 +1218,22 @@ function profileCard(p) {
       p.rank && h('span', { class: 'tag', style: 'align-self:flex-start' }, p.rank)));
 }
 
+// What of your profile can really change in Rocket League: the banner, avatar border and anthem
+// are items, so the Garage gives them another look (only you see it).
+const PROFILE_ITEMS = [['banners', 'Player banner'], ['borders', 'Avatar border'], ['anthems', 'Player anthem']];
+
 views.profile = () => {
   const p = S.settings.profile, upd = (patch) => set('profile', { ...p, ...patch });
+  const card = S.settings.overlay.card || { on: false, size: 100 };
+  const swaps = [...S.engine.active.filter((r) => r.op.kind === 'swap').map((r) => ({ op: r.op, queued: false })),
+    ...S.engine.queue.filter((q) => q.op && q.op.kind === 'swap').map((q) => ({ op: q.op, queued: true }))];
+  const toGarage = (cat) => () => { ui.cat = cat; ui.q = ''; ui.src = ui.dst = ui.check = null; ui.slot = 'src'; popGrid = true; go('garage')(); };
   return bento(
-    tile('s5', head('Your card'), profileCard(p),
-      h('p', { class: 'muted small push' }, 'This card lives in OpenW. It does not change your name, title or rank inside Rocket League: that would need code injected into the running game, which OpenW does not do.')),
+    tile(`s5${card.on ? ' ink' : ''}`, head('Your card', toggle(!!card.on, (v) => overlayUpd('card', { on: v }))), profileCard(p),
+      h('p', { class: 'muted small' }, card.on
+        ? 'Shown over the game while you play, like the music pill. Only you see it, and it shows in your recordings and clips.'
+        : 'Turn it on to show this card over the game while you play. Only you see it, and it shows in your recordings and clips.'),
+      card.on && overlaySizeRow('card', 60, 180), card.on && overlayPlace('card')),
     tile('s7', head('Edit'), h('div', { class: 'fields' },
       h('b', {}, 'Name'), field({ maxlength: 24, value: p.name, onchange: (e) => upd({ name: e.target.value }) }),
       h('b', {}, 'Title'), field({ maxlength: 32, value: p.title, onchange: (e) => upd({ title: e.target.value }) }),
@@ -1223,7 +1242,17 @@ views.profile = () => {
       h('b', {}, 'Rank badge'), h('div', {}, select(RANKS.map((r) => [r, r || 'None']), p.rank, (v) => upd({ rank: v }), 220)),
       h('b', {}, 'Picture'), h('div', { class: 'row' },
         h('button', { class: 'btn', onclick: () => run(async () => { const a = await api('pickAvatar'); return a ? api('setSetting', 'profile', { ...p, avatar: a }) : null; }) }, 'Choose picture'),
-        p.avatar && h('button', { class: 'btn danger', onclick: () => upd({ avatar: '' }) }, 'Remove')))));
+        p.avatar && h('button', { class: 'btn danger', onclick: () => upd({ avatar: '' }) }, 'Remove')))),
+    tile('s12', head('In Rocket League', h('span', { class: 'tag' }, 'Only you see it')),
+      h('p', { class: 'muted' }, 'Your banner, avatar border and anthem are items, so they can take the look of any other one in the Garage. You see the new look in the game; other players still see your real one.'),
+      h('div', { class: 'list' }, PROFILE_ITEMS.map(([cat, name]) => {
+        const s = swaps.find((x) => x.op.category === cat);
+        return h('div', { class: 'item' }, art(name, cat),
+          h('div', { class: 'grow' }, h('b', {}, name), h('div', { class: 'muted small' }, s ? `${s.op.label}${s.queued ? ' (when Rocket League closes)' : ''}` : 'As the game shows it')),
+          h('button', { class: 'btn sm', onclick: toGarage(cat) }, s ? 'Change in Garage' : 'Pick a look in Garage'));
+      }))),
+    noteTile('info', 's12', h('b', {}, 'What OpenW cannot change in the game'),
+      h('p', {}, 'Rocket League takes your name and picture from your Epic Games or Steam account, and your rank and titles (with their colour) from its own servers. No file on your PC holds them, so OpenW cannot change them in the game. Your name, title, rank badge and picture here are for this card.')));
 };
 
 /* ---------- settings ---------- */

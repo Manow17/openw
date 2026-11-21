@@ -35,6 +35,7 @@ const DEFAULTS = {
     onlyInGame: true, // show overlays only while Rocket League is the window in front
     pad: { on: false, model: 'auto', x: null, y: null, size: 100, opacity: 100, body: '#14161b', keys: '#23262d', glow: '#00d8c8' },
     music: { on: false, x: null, y: null, size: 100, source: 'auto' },
+    card: { on: false, x: null, y: null, size: 100 }, // the Profile page's card, over the game
   },
   // OpenW Input: profiles of stick, trigger and button settings (src/shared/transform.js)
   // own: hide the real controller from games while OpenW Input runs (HidHide when it is there,
@@ -342,9 +343,10 @@ async function pick(options) {
 const OVERLAYS = {
   pad: { page: 'overlay.html', width: 420, height: 360 },
   music: { page: 'nowplaying.html', width: 400, height: 70 },
+  card: { page: 'card.html', width: 380, height: 110 },
 };
 const ANCHORS = ['tl', 'tc', 'tr', 'bl', 'bc', 'br'];
-const DEFAULT_ANCHOR = { pad: 'br', music: 'tc' };
+const DEFAULT_ANCHOR = { pad: 'br', music: 'tc', card: 'tl' };
 const overlayWins = {};
 let overlayEdit = false, previewUntil = 0, previewTimer = null;
 let foreground = ''; // process name of the window in front, '' when unknown
@@ -361,7 +363,7 @@ function anchorPosition(kind, anchor) {
   return { x, y };
 }
 function overlayPayload(kind) {
-  return { ...settings.get('overlay')[kind], edit: overlayEdit };
+  return { ...settings.get('overlay')[kind], edit: overlayEdit, ...(kind === 'card' ? { profile: settings.get('profile') } : {}) };
 }
 function overlayShown(kind) {
   const o = settings.get('overlay');
@@ -456,6 +458,7 @@ const api = {
       if (value.music.source !== (mediaWatcher && mediaWatcher.source)) startMedia(); // follow a different app
     }
     if (key === 'theme') applyChrome();
+    if (key === 'profile') syncOverlays(); // the card over the game shows the change
     return snapshot();
   },
 
@@ -862,7 +865,8 @@ app.whenReady().then(async () => {
     startInput().catch((e) => console.error(e.message)); // its hiding queues after the leftover above
   }
   // settings from an older version: bring the overlay options into the current shape
-  const saved = settings.get('overlay');
+  let saved = settings.get('overlay');
+  if (saved.pad && saved.music && !saved.card) saved = settings.set('overlay', { ...saved, card: { ...DEFAULTS.overlay.card } }); // 0.4.10 added the card
   if (!saved.pad || !saved.music) {
     settings.set('overlay', { ...DEFAULTS.overlay, pad: { ...DEFAULTS.overlay.pad, on: !!saved.controller }, music: { ...DEFAULTS.overlay.music, on: !!saved.nowPlaying } });
   } else if (saved.pad.body === '#f2f3f5' && saved.pad.keys === '#1b1c21') {

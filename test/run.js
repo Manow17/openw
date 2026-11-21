@@ -827,6 +827,18 @@ function makeEngine(cooked, running = { value: false }) {
     for (const junk of ['', 'abc', '%', null, '1e400']) assert.strictEqual(typedValue(junk, 0, 100, 1), null, String(junk));
   });
 
+  test('every overlay window has its page, and the profile card goes over the game with the profile', () => {
+    const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
+    const block = /const OVERLAYS = \{([\s\S]*?)\n\};/.exec(main)[1];
+    const pages = [...block.matchAll(/(\w+): \{ page: '([\w.]+)'/g)].map((m) => [m[1], m[2]]);
+    assert.deepStrictEqual(pages.map((p) => p[0]), ['pad', 'music', 'card']);
+    for (const [, page] of pages) assert.ok(fs.existsSync(path.join(__dirname, '..', 'src', 'renderer', page)), `${page} is missing`);
+    assert.match(main, /kind === 'card' \? \{ profile: settings\.get\('profile'\) \}/, 'the card window gets the profile');
+    assert.match(main, /card: \{ on: false, x: null, y: null, size: 100 \}/, 'off until turned on');
+    const card = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'card.js'), 'utf8');
+    assert.match(card, /overlayConfig', 'card'/);
+  });
+
   /* ---------- OpenW Input ---------- */
   const TX = require('../src/shared/transform');
   const inputLib = require('../src/main/input');
