@@ -23,6 +23,7 @@ const Pad = (() => {
 .pc-ds4 .pc-hide { display: none; }
 /* PS5 and Xbox (line drawings with an id per button): filled flat */
 .pc-zg * { fill: var(--pad-body); stroke: var(--pad-line); stroke-width: 3; stroke-linejoin: round; }
+.pc-zg .pc-under { stroke: none; }
 .pc-zg [data-b], .pc-zg [data-b] *, .pc-zg [data-stick], .pc-zg [data-stick] * { fill: var(--pad-keys); }
 .pc-zg [data-trigger] { fill: var(--pad-keys); }
 .pc-zg .pc-hide { display: none; }

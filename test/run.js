@@ -839,6 +839,36 @@ function makeEngine(cooked, running = { value: false }) {
     assert.match(card, /overlayConfig', 'card'/);
   });
 
+  test('controller overlay: every model lights up where its buttons are drawn, and the PS5 body is solid', () => {
+    const vm = require('vm');
+    const ctx = {};
+    vm.runInNewContext(`${fs.readFileSync(path.join(__dirname, '..', 'assets', 'controllers', 'pads.js'), 'utf8')};this.ART = PAD_ART;`, ctx);
+    const shipped = ctx.ART;
+    const { art, centreOf } = require('../scripts/prepare-controllers.js');
+    assert.deepStrictEqual(Object.keys(shipped), ['ps5', 'ps4', 'xbox']);
+    for (const k of Object.keys(art)) assert.strictEqual(shipped[k].svg, art[k].svg, `pads.js is out of date for ${k}: run node scripts/prepare-controllers.js`);
+    const spot = (svg, b) => { const m = new RegExp(`<circle class="pc-spot" data-b="${b}" cx="([-\\d.]+)" cy="([-\\d.]+)"`).exec(svg); return m && { x: Number(m[1]), y: Number(m[2]) }; };
+    const near = (a, b, what) => assert.ok(a && b && Math.hypot(a.x - b.x, a.y - b.y) < 0.5, `${what}: glow at ${JSON.stringify(a)}, drawn at ${JSON.stringify(b)}`);
+    // Xbox: the sticks sit in translated groups; the glow goes where they are drawn, not where their numbers say
+    const xbox = fs.readFileSync(path.join(__dirname, '..', 'assets', 'controllers', 'src', 'xbox.svg'), 'utf8');
+    near(spot(shipped.xbox.svg, 10), { x: 367.8 - 111.12499 - 0.13231075, y: 486.7 - 64.029164 - 0.13229715 }, 'Xbox L3');
+    near(spot(shipped.xbox.svg, 11), { x: 662.7 - 5.0270754 - 0.13230778, y: 619.8 - 16.139577 - 0.13230041 }, 'Xbox R3');
+    near(centreOf(xbox, 'ButtonL3'), spot(shipped.xbox.svg, 10), 'centreOf');
+    near(spot(shipped.ps5.svg, 10), { x: 359, y: 460.3 }, 'PS5 L3');
+    // every model has both sticks, both triggers and every standard button
+    for (const [k, a] of Object.entries(shipped)) {
+      const tagged = new Set([...a.svg.matchAll(/data-b="([\d+]+)"/g)].flatMap((m) => m[1].split('+')).map(Number));
+      const want = k === 'xbox' ? [0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15] : [0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+      for (const b of want) assert.ok(tagged.has(b), `${k} has no button ${b}`);
+      assert.strictEqual((a.svg.match(/class="pc-cap" data-stick=/g) || []).length, 2, `${k} sticks`);
+      assert.strictEqual((a.svg.match(/data-trigger="/g) || []).length, 2, `${k} triggers`);
+    }
+    // PS5: a solid body under everything, and the grips and touchpad under the buttons
+    const ps5 = shipped.ps5.svg;
+    assert.ok(ps5.startsWith('<path class="pc-under"'), 'the solid body is drawn first');
+    for (const id of ['path1056', 'path1058', 'path1052']) assert.ok(ps5.indexOf(`ps5-${id}"`) < ps5.indexOf('ps5-ButtonBack"'), `${id} is drawn below the create button`);
+  });
+
   /* ---------- OpenW Input ---------- */
   const TX = require('../src/shared/transform');
   const inputLib = require('../src/main/input');
