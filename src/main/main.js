@@ -15,6 +15,7 @@ const { readLabels, readTexts, applyLabels } = require('./core/labels');
 const T = require('../shared/transform');
 const inputLib = require('./input');
 const steamcfg = require('./core/steamcfg');
+const { Updater } = require('./updater');
 // Steam's folder, from the registry (as Steam writes it), or the usual place
 const steamDir = () => new Promise((resolve) => require('child_process').execFile('reg', ['query', 'HKCU\\Software\\Valve\\Steam', '/v', 'SteamPath'], { windowsHide: true }, (err, out) => {
   const m = !err && /SteamPath\s+REG_SZ\s+(.+)/i.exec(String(out));
@@ -26,6 +27,7 @@ const DEFAULTS = {
   installDir: null,
 
   theme: { mode: 'dark' },
+  updates: { auto: true }, // download new versions from GitHub and install them
   presets: [],
   profile: { name: '', title: '', titleColor: '#00d8c8', glow: false, rank: '', avatar: '' },
   overlay: {
@@ -62,7 +64,7 @@ function moveOldData() {
   }
 }
 
-let win = null, settings, engine, maps, catalog = null, arenaList = null, running = false;
+let win = null, settings, engine, maps, catalog = null, arenaList = null, running = false, updater = null;
 const input = new inputLib.Input();
 
 const ACCENT = '#00d8c8';
@@ -200,6 +202,7 @@ function snapshot() {
   const dir = settings.get('installDir');
   return {
     version: app.getVersion(),
+    update: updater ? updater.state : null,
     settings: settings.data,
     install: { platform: settings.get('platform'), dir, valid: !!dir && game.isValidInstall(dir) },
     running,
@@ -306,6 +309,13 @@ function startMedia() {
 const api = {
   getState: () => snapshot(),
   detectGame: () => game.detect(),
+
+  // updates from GitHub Releases (updater.js)
+  async updateCheck() { await updater.check({ download: true }); return snapshot(); },
+  updateInstall() {
+    if (updater.install()) setTimeout(() => { installOnQuit = false; app.quit(); }, 400);
+    return snapshot();
+  },
 
   setInstall(platform, dir) {
     if (!game.isValidInstall(dir)) throw new Error('That folder does not contain TAGame\\CookedPCConsole');
@@ -665,6 +675,8 @@ app.whenReady().then(async () => {
   });
   loadKeys();
   maps = new Maps(path.join(data, 'maps'));
+  updater = new Updater({ current: app.getVersion(), dir: path.join(data, 'updates') });
+  updater.on('change', () => send('state', { state: snapshot(), flushed: [] }));
   delete settings.data.steamInput; // the old Steam Input route is gone
   // profiles from before OpenW used Steam's units are converted once
   if (settings.get('input').profiles.some((x) => x.units !== 'steam')) saveInput({ profiles: settings.get('input').profiles.map((x) => T.complete(x)) });
@@ -742,10 +754,19 @@ app.whenReady().then(async () => {
   syncOverlays();
   startMedia();
   setInterval(poll, 4000);
+  // updates: only an installed OpenW updates itself (a copy run from the source folder does not)
+  if (app.isPackaged) {
+    const check = () => { if (settings.get('updates').auto) updater.check({ download: true }); };
+    setTimeout(check, 15000);
+    setInterval(check, 6 * 3600 * 1000);
+  }
 });
+let installOnQuit = true;
 
 app.on('window-all-closed', () => app.quit());
 app.on('will-quit', () => {
+  // a downloaded update goes in when OpenW closes (the setup starts OpenW again afterwards)
+  if (installOnQuit && updater && settings && settings.get('updates').auto && updater.state.status === 'ready') updater.install();
   if (mediaWatcher) mediaWatcher.stop();
   input.stop();
   // the real controller must not stay hidden once OpenW is gone

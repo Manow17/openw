@@ -244,6 +244,7 @@ function render(animate) {
   top.replaceChildren(...[
     h('div', { class: 'pagetitle grow' }, h('h1', {}, name), sub && h('span', { class: 'muted clip' }, sub)),
     ready && S.running && h('span', { class: 'pill' }, h('span', { class: 'dot live' }), 'Game running · changes are queued'),
+    S.update && S.update.status === 'ready' && h('button', { class: 'btn sm primary', title: 'Closes OpenW, installs the new version and starts it again', onclick: () => run(() => api('updateInstall'), 'Installing the update…') }, `Update to v${S.update.version}`),
     h('button', { class: 'iconbtn', 'aria-label': dark ? 'Switch to light mode' : 'Switch to dark mode', onclick: () => setTheme(themeMode() === 'dark' ? 'light' : 'dark') }, icon(dark ? 'sun' : 'moon', 18)),
     ready && btnIcon('primary', 'play', 'Play', () => run(() => api('launchGame'), 'Starting Rocket League…'), { disabled: S.running }),
   ].filter(Boolean));
@@ -288,7 +289,7 @@ function setup() {
   const choose = (platform, label) => h('button', { class: 'tile s6 press', onclick: async () => {
     const found = await api('detectGame');
     if (found[platform]) run(() => api('setInstall', platform, found[platform]), 'Found Rocket League.');
-    else { toast(`No ${label} install found. Select the "rocketleague" folder.`, true); run(() => api('browseInstall', platform)); }
+    else { toast(`No ${label} install found. Select the "rocketleague" folder, or start Rocket League and click ${label} again: OpenW then finds it from the running game.`, true); run(() => api('browseInstall', platform)); }
   } }, h('h3', {}, 'Launcher'), h('h2', {}, label), h('span', { class: 'muted small' }, 'Detect automatically'));
   return h('div', { class: 'setupwrap' }, bento(
     tile('s12 hero ink', mark(72), h('h1', {}, 'Where do you play?'), h('p', { class: 'muted' }, 'Pick your launcher and OpenW finds Rocket League for you.')),
@@ -1150,12 +1151,37 @@ views.settings = () => {
       h('div', { class: 'row wrap push' },
         h('button', { class: 'btn primary', onclick: () => run(async () => { const res = await api('importKeys'); catalog = null; arenas = null; return res; }, (r) => (r.keys ? `${r.keys.toLocaleString()} keys loaded. Pictures are being re-read.` : 'No change.')) }, S.keys ? 'Replace key list' : 'Add key list'),
         S.keys ? h('button', { class: 'btn danger', onclick: () => run(async () => { const res = await api('removeKeys'); catalog = null; arenas = null; return res; }, 'Key list removed.') }, 'Remove') : null)),
+    updatesTile(),
     tile('s5', head('Data'), h('p', { class: 'muted' }, 'Backups, maps and settings live in the data folder.'),
       h('div', { class: 'row wrap push' },
         h('button', { class: 'btn', onclick: () => api('openDataFolder') }, 'Open data folder'),
         h('button', { class: 'btn danger', disabled: !S.engine.active.length, onclick: () => run(() => api('revertAll'), 'Everything reverted.') }, 'Revert every change'))),
     noteTile('warn', 's12', `OpenW v${S.version} changes files in your Rocket League folder and backs up each one first. Rocket League runs with Easy Anti-Cheat; OpenW does not touch or work around it and cannot promise that changed files are accepted online. Changing game files may break the game’s terms of service and could put your account at risk, so use it at your own risk. Your launcher’s “Verify files” always restores a clean install. Free and open source; not affiliated with Psyonix or Epic Games.`));
 };
+
+// Updates from GitHub Releases: what the updater is doing, and the switch for automatic updates.
+function updatesTile() {
+  const u = S.update || { status: 'idle' };
+  const auto = !S.settings.updates || S.settings.updates.auto !== false;
+  const status = {
+    idle: auto ? 'Checks GitHub for a new version shortly after OpenW starts, and every 6 hours.' : 'Automatic updates are off.',
+    checking: 'Checking GitHub…',
+    current: `You have the newest version (v${S.version}).`,
+    available: `OpenW v${u.version} is out.`,
+    downloading: `Downloading OpenW v${u.version}… ${Math.round((u.progress || 0) * 100)}%`,
+    ready: `OpenW v${u.version} is downloaded and checked. It installs when you close OpenW, or now:`,
+    installing: 'Installing…',
+    error: `Could not update: ${u.error}`,
+  }[u.status] || '';
+  return tile('s7', head('Updates', h('span', { class: `tag${u.status === 'ready' ? ' on' : ''}` }, `v${S.version}`)),
+    h('p', { class: 'muted' }, 'New versions come from OpenW’s releases on GitHub. Each download is checked against the SHA-256 its release gives before it is installed; Windows asks for permission once while it installs.'),
+    h('div', { class: 'opt-row' }, h('div', { class: 'grow' }, h('b', {}, 'Update automatically'), h('div', { class: 'muted small' }, status)),
+      toggle(auto, (v) => set('updates', { ...(S.settings.updates || {}), auto: v }))),
+    h('div', { class: 'row wrap push' },
+      u.status === 'ready'
+        ? h('button', { class: 'btn primary', onclick: () => run(() => api('updateInstall'), 'Installing the update…') }, `Install v${u.version} now`)
+        : h('button', { class: 'btn', disabled: ['checking', 'downloading', 'installing'].includes(u.status), onclick: () => run(() => api('updateCheck'), (r) => (r.update && r.update.status === 'current' ? 'You have the newest version.' : r.update && r.update.status === 'error' ? r.update.error : 'Update found.')) }, 'Check now')));
+}
 
 /* ---------- boot ---------- */
 

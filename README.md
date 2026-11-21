@@ -79,7 +79,7 @@ Changes are written while Rocket League is closed. The game keeps the arena file
 
 | Area | State |
 | --- | --- |
-| Finding the game (Epic, Steam), running check, Play button | Tested on an Epic install |
+| Finding the game (Epic, Steam), running check, Play button | Tested on an Epic install. Epic installs are looked for in Epic's manifest folder (wherever ProgramData is, and the one Epic records in the registry), the launcher's list of installed games, the usual Epic folders on every drive, and finally a running Rocket League's own folder, so a launcher that keeps its records somewhere new still works |
 | Backup, restore, queue, game-update detection | Covered by automated tests on copies of real game files |
 | Item catalog and pictures | Built from your own install (about 8,600 items on the test machine). Pictures are decoded from the game's thumbnail packages and cached: about two thirds with the built-in key, about 97% with a key list added |
 | Item swaps | **Experimental.** The package rewrite is tested structurally (see below) but nobody has yet confirmed the result in game |
@@ -105,6 +105,10 @@ Not implemented: custom paint colours, 3D garage preview, custom balls and sound
 Download `OpenW-Setup-<version>.exe` from [Releases](https://github.com/Manow17/openw/releases) and run it. It installs OpenW for all users (in Program Files, with Start Menu and desktop shortcuts) and, in the same step, the two controller drivers OpenW Input uses ([drivers/](drivers/README.md)), so Windows' permission prompt for the setup is the only one and the app never shows a driver step. Drivers already on the PC are left as they are. If a driver wants a restart, the setup offers one at the end.
 
 The setup is not code-signed (that needs a paid certificate), so Windows SmartScreen may say it "protected your PC": choose More info, then Run anyway. Uninstall under Windows Settings, Apps; your settings and backups stay in `%APPDATA%\OpenW`, and the drivers stay too, since other apps (DS4Windows, for one) may use them; they have their own entries there.
+
+**Updates.** OpenW updates itself from this repository's releases: shortly after it starts, and every 6 hours, it looks for a newer release, downloads its setup, checks it against the SHA-256 the release gives (GitHub's own digest of the file, or the one in the release notes) and installs it when you close OpenW, or straight away with **Update to v…** at the top. Windows asks for permission once while it installs. It can be switched off under Settings, Updates. A copy run from the source folder never updates itself.
+
+**Releases are built by GitHub Actions** ([.github/workflows/release.yml](.github/workflows/release.yml)). Every push to `main` that changes the app (`src`, `assets`, `bin`, `drivers`, `build` or `package.json`) runs the tests, builds the setup and publishes it as a new release, with its SHA-256 and the commits since the last release in the notes. The version is `package.json`'s when it is newer than every release, otherwise the next patch ([scripts/release-version.js](scripts/release-version.js)). So pushing a change is enough for every installed OpenW to get it.
 
 To build the setup yourself (it lands in `dist/`):
 

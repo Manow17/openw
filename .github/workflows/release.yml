@@ -1,0 +1,82 @@
+# Every push to main that changes the app builds OpenW and publishes it as a new release.
+# Installed copies of OpenW check the releases and update themselves (src/main/updater.js).
+# The version is package.json's when it is new, otherwise the next patch (scripts/release-version.js).
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'assets/**'
+      - 'bin/**'
+      - 'drivers/**'
+      - 'build/**'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Pick the version
+        id: version
+        shell: pwsh
+        run: |
+          $v = node scripts/release-version.js
+          npm version $v --no-git-tag-version --allow-same-version | Out-Null
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Releasing OpenW $v"
+
+      - name: Build the setup
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          $setup = "dist/OpenW-Setup-$v.exe"
+          $sha = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          $previous = git describe --tags --abbrev=0 --match "v*" 2>$null
+          $changes = if ($previous) { git log "$previous..HEAD" --pretty="- %s" --no-merges } else { git log -20 --pretty="- %s" --no-merges }
+          $notes = @(
+            "Installed copies of OpenW update to this version by themselves (Settings, Updates).",
+            "",
+            "## Install",
+            "",
+            "Download **OpenW-Setup-$v.exe** below and run it. It installs OpenW and the two controller drivers in one go (Windows asks for permission once).",
+            "",
+            "The setup is not code-signed, so Windows SmartScreen may say it ""protected your PC"": choose **More info**, then **Run anyway**.",
+            "",
+            "SHA-256: ``$sha``",
+            "",
+            "## Changes",
+            ""
+          ) + $changes
+          $notes -join "`n" | Out-File notes.md -Encoding utf8
+          gh release create "v$v" $setup --target "${{ github.sha }}" --title "OpenW $v" --notes-file notes.md --prerelease

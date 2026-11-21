@@ -53,6 +53,46 @@ function makeEngine(cooked, running = { value: false }) {
     assert.strictEqual(prettify('star_holo'), 'Star Holo');
   });
 
+  test('updates: versions compare, the newest usable release is picked, its SHA-256 is read', () => {
+    const { compare, pickRelease, checksum } = require('../src/main/updater');
+    assert.ok(compare('0.4.1', '0.4.0') > 0 && compare('v0.10.0', '0.9.9') > 0 && compare('0.4.0', '0.4.0') === 0);
+    assert.ok(compare('0.5.0-beta', '0.5.0') < 0 && compare('0.5.0-beta', '0.4.9') > 0);
+    const sha = 'a'.repeat(64);
+    const rel = (tag, opts = {}) => ({ tag_name: tag, draft: !!opts.draft, body: opts.body || '', html_url: 'u', assets: opts.noSetup ? [] : [{ name: 'OpenW-Setup-' + tag.slice(1) + '.exe', browser_download_url: 'https://x/' + tag, size: 9, digest: opts.digest }] });
+    const list = [rel('v0.4.0'), rel('v0.4.2', { draft: true }), rel('v0.4.1', { body: 'SHA-256: ' + '\x60' + sha + '\x60' }), rel('v0.5.0', { noSetup: true })];
+    const pick = pickRelease(list, '0.4.0');
+    assert.deepStrictEqual([pick.version, pick.file, pick.sha256], ['0.4.1', 'OpenW-Setup-0.4.1.exe', sha]);
+    assert.strictEqual(pickRelease(list, '0.4.1'), null, 'nothing newer: no draft, no release without a setup');
+    assert.strictEqual(checksum({ digest: 'sha256:' + 'B'.repeat(64) }, ''), 'b'.repeat(64), 'GitHub\'s own digest comes first');
+    const { nextVersion } = require('../scripts/release-version');
+    assert.strictEqual(nextVersion('0.4.1', ['v0.4.0']), '0.4.1');
+    assert.strictEqual(nextVersion('0.4.1', ['v0.4.0', 'v0.4.1']), '0.4.2');
+    assert.strictEqual(nextVersion('0.4.0', ['v0.4.0', 'v0.4.3', 'v0.3.9']), '0.4.4');
+    assert.strictEqual(nextVersion('0.5.0', ['v0.4.7']), '0.5.0');
+  });
+
+  test('Rocket League is found in every place Epic launchers record it', async () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'epic-'));
+    const install = path.join(dir, 'Games', 'rocketleague');
+    fs.mkdirSync(path.join(install, 'TAGame', 'CookedPCConsole'), { recursive: true });
+    const manifests = path.join(dir, 'Manifests');
+    fs.mkdirSync(manifests);
+    // another game first, then Rocket League recorded by app name
+    fs.writeFileSync(path.join(manifests, 'a.item'), JSON.stringify({ AppName: 'Fortnite', InstallLocation: dir }));
+    fs.writeFileSync(path.join(manifests, 'b.item'), JSON.stringify({ AppName: 'Sugar', InstallLocation: install }));
+    assert.strictEqual(await game.detectEpic({ manifestDirs: [path.join(dir, 'nothing'), manifests], installedLists: [], drives: [] }), install);
+    // a launcher that names it differently: by display name or the program it starts
+    fs.writeFileSync(path.join(manifests, 'b.item'), JSON.stringify({ AppName: 'x1', DisplayName: 'Rocket League®', InstallLocation: install }));
+    assert.strictEqual(await game.detectEpic({ manifestDirs: [manifests], installedLists: [], drives: [] }), install);
+    // no manifests at all: the launcher's list of installed games
+    const list = path.join(dir, 'LauncherInstalled.dat');
+    fs.writeFileSync(list, JSON.stringify({ InstallationList: [{ AppName: 'Sugar', InstallLocation: install }] }));
+    assert.strictEqual(await game.detectEpic({ manifestDirs: [], installedLists: [list], drives: [] }), install);
+    // a record of a folder that is gone is not an install
+    fs.writeFileSync(list, JSON.stringify({ InstallationList: [{ AppName: 'Sugar', InstallLocation: path.join(dir, 'gone') }] }));
+    assert.strictEqual(await game.detectEpic({ manifestDirs: [], installedLists: [list], drives: [] }), null);
+  });
+
   test('store round-trips', () => {
     const f = path.join(tmp, 's.json');
     new Store(f, { a: 1 }).set('b', [2]);
