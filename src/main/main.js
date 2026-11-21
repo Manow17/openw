@@ -78,6 +78,25 @@ function logError(where, e) {
 process.on('uncaughtException', (e) => logError('uncaught', e));
 process.on('unhandledRejection', (e) => logError('unhandled', e));
 const input = new inputLib.Input();
+// The controller overlay's live input. Chromium gives gamepad input only to the window in focus,
+// and the overlay never has focus (the game does), so the overlay is fed by OpenW's input helper:
+// OpenW Input's own while it runs, otherwise a second helper that only reads the controller.
+const reader = new inputLib.Input();
+let pageWatch = false; // the Controller page shows live input
+const padFeedWanted = () => !smokeShot && !!(settings && settings.get('overlay').pad.on);
+function sendPad(st, status) {
+  const w = overlayWins.pad;
+  if (w && !w.isDestroyed() && w.isVisible()) w.webContents.send('pad-state', { ...st, kind: status.pad ? status.pad.kind : null });
+}
+function syncPadFeed() {
+  const want = padFeedWanted();
+  if (input.running) {
+    if (reader.running) reader.stop();
+    input.watch(want || pageWatch);
+  } else if (want && !reader.running) {
+    try { reader.start(null, { read: true }); reader.watch(true); } catch (e) { logError('overlay reader', e); }
+  } else if (!want && reader.running) reader.stop();
+}
 
 const ACCENT = '#00d8c8';
 const ICON = path.join(__dirname, '..', '..', 'assets', 'icon.png');
@@ -167,11 +186,14 @@ async function showNow() {
   pushInputStatus();
 }
 async function startInput() {
+  await reader.stop(); // the overlay's reader lets go of the controller first, so OpenW Input can take it
   input.start(inputProfile(), { own: hideWanted() && !inputLib.hasHidHide() });
+  syncPadFeed();
   await queueHide(hideNow);
 }
 async function stopInput() {
   await input.stop();
+  syncPadFeed();
   await queueHide(showNow);
 }
 const send = (channel, payload) => { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); };
@@ -348,6 +370,7 @@ const api = {
     settings.set(key, value);
     if (key === 'overlay') {
       syncOverlays();
+      syncPadFeed();
       if (value.music.source !== (mediaWatcher && mediaWatcher.source)) startMedia(); // follow a different app
     }
     if (key === 'theme') applyChrome();
@@ -559,7 +582,7 @@ const api = {
     if (input.running) input.configure(inputProfile());
     return { state: snapshot(), skipped };
   },
-  inputWatch(on) { input.watch(!!on); },
+  inputWatch(on) { pageWatch = !!on; input.watch(pageWatch || padFeedWanted()); },
   // a setting changed: saved, and the helper gets it at once
   inputSave(profile) {
     const p = T.complete(profile), i = settings.get('input');
@@ -700,7 +723,9 @@ app.whenReady().then(async () => {
     pushInputStatus();
     if (st.running && st.pad) queueHide(hideNow); // a controller plugged in while running
   });
-  input.on('state', (st) => send('input-state', st));
+  input.on('state', (st) => { send('input-state', st); sendPad(st, input.status); });
+  reader.on('state', (st) => sendPad(st, reader.status));
+  input.on('status', (st) => { if (!st.running) syncPadFeed(); }); // OpenW Input stopped on its own: the reader takes over
   // anything left hidden by an earlier run (or by 0.3's hide list) is shown again first
   const leftover = [...(settings.get('input').autoHidden || []), ...(settings.get('input').hidden || [])];
   if (leftover.length && !smokeShot) {
@@ -782,6 +807,7 @@ app.whenReady().then(async () => {
     return;
   }
   syncOverlays();
+  syncPadFeed();
   startMedia();
   setInterval(poll, 4000);
   // updates: only an installed OpenW updates itself (a copy run from the source folder does not)
@@ -799,6 +825,7 @@ app.on('will-quit', () => {
   if (installOnQuit && updater && settings && settings.get('updates').auto && updater.state.status === 'ready') updater.install({ wait: false });
   if (mediaWatcher) mediaWatcher.stop();
   input.stop();
+  reader.stop();
   // the real controller must not stay hidden once OpenW is gone
   const paths = settings && settings.get('input').autoHidden;
   if (paths && paths.length) { inputLib.showControllersSync(paths); saveInput({ autoHidden: [] }); }

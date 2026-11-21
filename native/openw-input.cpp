@@ -11,6 +11,8 @@
 //   in:  stick/trigger/button/rumble/light lines, then "apply"; "watch 1|0"; "quit"
 //   out: hello, vigem ..., pad ..., state ... (while watched), error ...
 //   --own (or "own 1"): take a PlayStation controller for this process alone, so games cannot open it
+//   --read: only read the controller and report it (for the controller overlay): no virtual pad,
+//           no light or rumble, never takes the controller for itself; runs next to OpenW Input
 // Without ViGEmBus it still reads the controller, so the page can show what the settings do.
 // It quits when its stdin closes, and the virtual pad goes away with its handle.
 //
@@ -285,6 +287,7 @@ static std::atomic<int> watching{ 0 };
 // Take a PlayStation controller for ourselves (no sharing), so games cannot open it: hiding
 // without HidHide. Windows only allows it while no other app has the controller open.
 static std::atomic<bool> wantOwn{ false }, reopen{ false };
+static bool readOnly = false; // --read: report the controller, change nothing
 static Raw shownRaw; static XReport shownOut = {};
 
 // what the active controller is, for rumble and light
@@ -386,6 +389,7 @@ static BYTE dsSeq = 0;
 
 // Sends rumble and light to the real controller.
 static void sendFeedback() {
+  if (readOnly) return; // the overlay's reader never sets light or rumble
   std::lock_guard<std::mutex> g(padLock);
   int pct; int lr, lg, lb;
   { std::lock_guard<std::mutex> s(stepLock); pct = cfg.rumble; lr = cfg.lightR; lg = cfg.lightG; lb = cfg.lightB; }
@@ -642,7 +646,7 @@ static void inputThread() {
     }
     if (line.rfind("watch ", 0) == 0) { watching = atoi(line.c_str() + 6); continue; }
     // let go of the controller and open it again (to take it for ourselves, or to share it)
-    if (line.rfind("own ", 0) == 0) { wantOwn = atoi(line.c_str() + 4) != 0; reopen = true; continue; }
+    if (line.rfind("own ", 0) == 0) { if (!readOnly) { wantOwn = atoi(line.c_str() + 4) != 0; reopen = true; } continue; }
     if (line == "reopen") { reopen = true; continue; }
     if (!parseLine(line, pending)) say("error BAD_LINE %s", line.c_str());
   }
@@ -676,8 +680,12 @@ static int vds4Mode() {
 int main(int argc, char** argv) {
   if (argc > 1 && !strcmp(argv[1], "--vds4")) return vds4Mode();
   if (argc > 1 && !strcmp(argv[1], "--transform")) return transformMode();
-  for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--own")) wantOwn = true;
-  HANDLE once = CreateMutexW(nullptr, TRUE, L"Local\\OpenWInput");
+  for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "--own")) wantOwn = true;
+    if (!strcmp(argv[i], "--read")) readOnly = true;
+  }
+  if (readOnly) wantOwn = false;
+  HANDLE once = CreateMutexW(nullptr, TRUE, readOnly ? L"Local\\OpenWInputRead" : L"Local\\OpenWInput");
   if (GetLastError() == ERROR_ALREADY_EXISTS) { say("error RUNNING OpenW Input is already running"); return 2; }
   crcInit();
   timeBeginPeriod(1);
@@ -688,7 +696,8 @@ int main(int argc, char** argv) {
   if (xi) xGet = (GetStateEx)GetProcAddress(xi, (LPCSTR)100); // XInputGetStateEx: also reports the guide button
   if (!xGet) xGet = (GetStateEx)XInputGetState;
 
-  if (openVigem()) say("vigem ok %d", (int)vigemIndex);
+  if (readOnly) say("vigem off");
+  else if (openVigem()) say("vigem ok %d", (int)vigemIndex);
   else say("vigem missing");
 
   std::thread(inputThread).detach();

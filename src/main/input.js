@@ -25,10 +25,11 @@ class Input extends EventEmitter {
   get running() { return !!this.proc; }
 
   // own: take PlayStation controllers for the helper alone, so games cannot open them
-  start(profile, { own = false } = {}) {
-    if (this.proc) return this.configure(profile);
+  // read: only read and report the controller (for the overlay): no virtual pad, no profile
+  start(profile, { own = false, read = false } = {}) {
+    if (this.proc) return profile ? this.configure(profile) : undefined;
     if (!fs.existsSync(this.exe)) throw new Error('The input helper (bin/openw-input.exe) is missing. Build it with npm run build-input.');
-    const proc = spawn(this.exe, own ? ['--own'] : [], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    const proc = spawn(this.exe, read ? ['--read'] : own ? ['--own'] : [], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
     this.proc = proc;
     this.status = { running: true, vigem: null, pad: null, error: '' };
     let buf = '';
@@ -46,7 +47,7 @@ class Input extends EventEmitter {
       this.status = { ...this.status, running: false, pad: null, error: code ? this.status.error || `The input helper stopped (code ${code}).` : this.status.error };
       this.emit('status', this.status);
     });
-    this.configure(profile);
+    if (profile) this.configure(profile);
     if (this.watching) this.write('watch 1');
     this.emit('status', this.status);
   }
