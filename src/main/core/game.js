@@ -14,8 +14,32 @@ function cookedDir(installDir) {
   return path.join(installDir, 'TAGame', 'CookedPCConsole');
 }
 
+// A real Rocket League folder: TAGame\CookedPCConsole full of the game's packages. A folder an
+// old install left behind (or an old launcher record points at) has the folder but not the files.
+const MIN_PACKAGES = 100;
+const counted = new Map(); // folder -> { n, at }: counting thousands of files is not free
+function packageCount(installDir) {
+  if (!installDir) return 0;
+  const hit = counted.get(installDir);
+  if (hit && Date.now() - hit.at < 60000) return hit.n;
+  let n = 0;
+  try { n = fs.readdirSync(cookedDir(installDir)).filter((f) => /\.upk$/i.test(f)).length; } catch { n = 0; }
+  counted.set(installDir, { n, at: Date.now() });
+  return n;
+}
 function isValidInstall(installDir) {
-  try { return !!installDir && fs.statSync(cookedDir(installDir)).isDirectory(); } catch { return false; }
+  return packageCount(installDir) >= MIN_PACKAGES;
+}
+// Why a folder is not a Rocket League install, in words.
+function whyNotInstall(installDir) {
+  const cooked = cookedDir(installDir);
+  if (!fs.existsSync(cooked)) {
+    let inside = [];
+    try { inside = fs.readdirSync(installDir).slice(0, 8); } catch { /* unreadable */ }
+    return `${installDir} has no TAGame\\CookedPCConsole folder${inside.length ? ` (it holds: ${inside.join(', ')})` : ''}. Pick the "rocketleague" folder.`;
+  }
+  counted.delete(installDir);
+  return `${cooked} holds ${packageCount(installDir)} game packages, not the thousands Rocket League has, so it is not the folder the game runs from (an old install left behind?). Pick the folder Rocket League is installed in.`;
 }
 
 // An Epic record of Rocket League: its app name, or (if a launcher names it differently) its
@@ -118,11 +142,13 @@ function fromRunningGame() {
   });
 }
 
+// A running Rocket League's own folder comes first: it is the one the game really uses.
 async function detect() {
-  const [epic, steam] = await Promise.all([detectEpic(), detectSteam()]);
-  if (epic || steam) return { epic, steam };
-  const live = await fromRunningGame();
-  return { epic: live && live.platform === 'epic' ? live.dir : null, steam: live && live.platform === 'steam' ? live.dir : null };
+  const [live, epic, steam] = await Promise.all([fromRunningGame(), detectEpic(), detectSteam()]);
+  return {
+    epic: live && live.platform === 'epic' ? live.dir : epic,
+    steam: live && live.platform === 'steam' ? live.dir : steam,
+  };
 }
 
 function isProcessRunning(exe) {
@@ -140,4 +166,4 @@ function launchUrl(platform) {
     : `com.epicgames.launcher://apps/${EPIC_APP}?action=launch&silent=true`;
 }
 
-module.exports = { cookedDir, isValidInstall, isRocketLeague, detectEpic, detectSteam, fromRunningGame, detect, isRunning, isProcessRunning, launchUrl };
+module.exports = { cookedDir, isValidInstall, whyNotInstall, packageCount, MIN_PACKAGES, isRocketLeague, detectEpic, detectSteam, fromRunningGame, detect, isRunning, isProcessRunning, launchUrl };

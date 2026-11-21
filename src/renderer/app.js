@@ -302,7 +302,9 @@ function setup() {
 // A failed load is shown with its reason and a way to try again, never as endless loading.
 const reason = (e) => String((e && e.message) || e).replace(/^Error invoking remote method 'api': (Error: )?/, '');
 const failed = (glyph, heading, error, retry) => empty(glyph, heading, `${error} Details are in openw.log in the data folder.`,
-  h('div', { class: 'row wrap', style: 'justify-content:center' }, h('button', { class: 'btn primary', onclick: retry }, 'Try again'), h('button', { class: 'btn', onclick: () => api('openDataFolder') }, 'Open data folder')));
+  h('div', { class: 'row wrap', style: 'justify-content:center' }, h('button', { class: 'btn primary', onclick: retry }, 'Try again'),
+    h('button', { class: 'btn', onclick: () => run(async () => { const res = await api('browseInstall', S.install.platform); catalog = null; catalogError = null; arenas = null; arenasError = null; return res; }) }, 'Choose the Rocket League folder'),
+    h('button', { class: 'btn', onclick: () => api('openDataFolder') }, 'Open data folder')));
 let catalogError = null, catalogLoading = false;
 async function ensureCatalog() {
   if (catalog || catalogLoading) return;

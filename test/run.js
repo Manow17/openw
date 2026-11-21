@@ -75,6 +75,7 @@ function makeEngine(cooked, running = { value: false }) {
     const dir = fs.mkdtempSync(path.join(tmp, 'epic-'));
     const install = path.join(dir, 'Games', 'rocketleague');
     fs.mkdirSync(path.join(install, 'TAGame', 'CookedPCConsole'), { recursive: true });
+    for (let i = 0; i < game.MIN_PACKAGES; i++) fs.writeFileSync(path.join(install, 'TAGame', 'CookedPCConsole', `Pkg${i}.upk`), '');
     const manifests = path.join(dir, 'Manifests');
     fs.mkdirSync(manifests);
     // another game first, then Rocket League recorded by app name
@@ -91,6 +92,14 @@ function makeEngine(cooked, running = { value: false }) {
     // a record of a folder that is gone is not an install
     fs.writeFileSync(list, JSON.stringify({ InstallationList: [{ AppName: 'Sugar', InstallLocation: path.join(dir, 'gone') }] }));
     assert.strictEqual(await game.detectEpic({ manifestDirs: [], installedLists: [list], drives: [] }), null);
+    // a folder an old install left behind (the folders, not the game's files) is not an install, and says why
+    const left = path.join(dir, 'Old', 'rocketleague');
+    fs.mkdirSync(path.join(left, 'TAGame', 'CookedPCConsole'), { recursive: true });
+    fs.writeFileSync(path.join(manifests, 'b.item'), JSON.stringify({ AppName: 'Sugar', InstallLocation: left }));
+    assert.strictEqual(await game.detectEpic({ manifestDirs: [manifests], installedLists: [], drives: [] }), null);
+    assert.ok(!game.isValidInstall(left) && game.isValidInstall(install));
+    assert.match(game.whyNotInstall(left), /holds 0 game packages/);
+    assert.match(game.whyNotInstall(dir), /has no TAGame/);
   });
 
   test('store round-trips', () => {

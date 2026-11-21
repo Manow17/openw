@@ -183,6 +183,7 @@ let catalogJob = null;
 async function buildIndex() {
   const dir = cooked(), keys = extraKeys;
   const built = buildCatalog(dir);
+  if (!built.items.length) throw new Error(`No items were found in ${dir} (${built.fileCount} files there). This is not the folder Rocket League runs from: pick the "rocketleague" folder under Settings, Game.`);
   const index = new Store(path.join(app.getPath('userData'), 'index.json'), { dir: '', keys: 0, files: {} });
   const fresh = index.get('dir') === dir && index.get('keys') === keys.length;
   const files = fresh ? index.get('files') : {};
@@ -330,7 +331,7 @@ const api = {
   },
 
   setInstall(platform, dir) {
-    if (!game.isValidInstall(dir)) throw new Error('That folder does not contain TAGame\\CookedPCConsole');
+    if (!game.isValidInstall(dir)) throw new Error(game.whyNotInstall(dir));
     settings.set('platform', platform);
     settings.set('installDir', dir);
     catalog = null;
@@ -715,6 +716,20 @@ app.whenReady().then(async () => {
   } else if (saved.pad.body === '#f2f3f5' && saved.pad.keys === '#1b1c21') {
     // the old drawn controller's default colours: use the new default (midnight black)
     settings.set('overlay', { ...saved, pad: { ...saved.pad, body: DEFAULTS.overlay.pad.body, keys: DEFAULTS.overlay.pad.keys, model: saved.pad.model || 'auto' } });
+  }
+  // a folder set before that holds no game (an old install left behind, an old launcher record):
+  // the real one is looked for again, the running game's own folder first
+  if (settings.get('installDir') && !game.isValidInstall(settings.get('installDir'))) {
+    const was = settings.get('installDir');
+    try {
+      const found = await game.detect();
+      const platform = found[settings.get('platform')] ? settings.get('platform') : found.epic ? 'epic' : found.steam ? 'steam' : null;
+      if (platform) {
+        settings.set('platform', platform);
+        settings.set('installDir', found[platform]);
+        logError('install', `${was} holds no game; using ${found[platform]} instead`);
+      } else logError('install', `${was} holds no game and no other install was found: ${game.whyNotInstall(was)}`);
+    } catch (e) { logError('install', e); }
   }
   const installed = cooked() && game.isValidInstall(settings.get('installDir'));
   if (installed) engine.reconcile();
