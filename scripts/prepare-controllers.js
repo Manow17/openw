@@ -115,7 +115,8 @@ function centreOf(svg, id) {
 
 // extra: { under: [path id, transform] the outline whose first contour is drawn as a solid body
 // below everything (the PS5 outline is a ring, so its middle was see-through);
-// below: ids of body shapes moved below the buttons, so a filled body never hides a button }
+// below: ids of body shapes moved below the buttons, so a filled body never hides a button;
+// raise: [id, over] pairs: id is moved to right after over (a stick top above its ring) }
 function buildZergatul(file, prefix, name, ids, extra = {}) {
   let t = stripXml(fs.readFileSync(path.join(SRC, file), 'utf8'));
   t = t.replace(/<style[^>]*>[\s\S]*?<\/style>/g, '');
@@ -123,7 +124,7 @@ function buildZergatul(file, prefix, name, ids, extra = {}) {
   // tag the buttons before ids are prefixed
   t = t.replace(/\sid="([A-Za-z0-9]+)"/g, (m, id) => {
     if (id in ids) return `${m} data-b="${ids[id]}"`;
-    if (/^(Left|Right)StickCore$/.test(id)) return `${m} data-stick="${id[0] === 'L' ? 0 : 2}"`;
+    if (/^(Left|Right)StickCore$/.test(id)) return `${m} data-stick="${id[0] === 'L' ? 0 : 2}" class="pc-stick"`;
     if (/^(Left|Right)Trigger$/.test(id)) return `${m} data-trigger="${id[0] === 'L' ? B.LT : B.RT}"`;
     if (/^(Left|Right)TriggerClip$/.test(id)) return `${m} class="pc-hide"`;
     return m;
@@ -132,6 +133,14 @@ function buildZergatul(file, prefix, name, ids, extra = {}) {
   const vb = t.match(/viewBox="([^"]+)"/)[1];
   const svgOpen = t.match(/<svg\b[^>]*>/)[0];
   let inner = t.slice(t.indexOf(svgOpen) + svgOpen.length, t.lastIndexOf('</svg>'));
+  // stick tops above the rings around them (filled, the rings drawn later hid them)
+  const element = (id) => new RegExp(`<(?:path|ellipse|circle)\\b[^>]*\\sid="${prefix}-${id}"[^>]*/>`).exec(inner);
+  for (const [id, over] of extra.raise || []) {
+    const a = element(id), b = element(over);
+    if (!a || !b) throw new Error(`${file}: no ${a ? over : id}`);
+    inner = inner.replace(a[0], '');
+    inner = inner.replace(b[0], b[0] + a[0]);
+  }
   // body shapes go below the buttons, and a solid body below everything
   const below = [];
   for (const id of extra.below || []) {
@@ -167,10 +176,11 @@ const common = { ButtonA: B.A, ButtonB: B.B, ButtonX: B.X, ButtonY: B.Y, ButtonL
 const art = {
   // PS5: path1052 is the touchpad, path1084 the PS button, path1056/1058 the grips, path1060 the outline
   ps5: buildZergatul('ps5.svg', 'ps5', 'PS5 DualSense', { ...common, DPadUp: B.Up, DPadDown: B.Down, DPadLeft: B.Left, DPadRight: B.Right, path1052: B.Pad, path1084: B.Home },
-    { under: ['path1060', 'translate(0,834)'], below: ['path1052', 'path1056', 'path1058'] }),
+    { under: ['path1060', 'translate(0,834)'], below: ['path1052', 'path1056', 'path1058'], raise: [['LeftStickCore', 'ellipse1044'], ['RightStickCore', 'ellipse1050']] }),
   ps4: buildDs4(),
   // Xbox d-pad: D0 up, D2 right, D4 down, D6 left; odd ones are the corners between them
-  xbox: buildZergatul('xbox.svg', 'xbox', 'Xbox controller', { ...common, D0: B.Up, D2: B.Right, D4: B.Down, D6: B.Left, D1: `${B.Up}+${B.Right}`, D3: `${B.Right}+${B.Down}`, D5: `${B.Down}+${B.Left}`, D7: `${B.Left}+${B.Up}` }),
+  xbox: buildZergatul('xbox.svg', 'xbox', 'Xbox controller', { ...common, D0: B.Up, D2: B.Right, D4: B.Down, D6: B.Left, D1: `${B.Up}+${B.Right}`, D3: `${B.Right}+${B.Down}`, D5: `${B.Down}+${B.Left}`, D7: `${B.Left}+${B.Up}` },
+    { raise: [['ButtonL3', 'path943-4-7'], ['ButtonR3', 'path943-4']] }),
 };
 // required (by the tests): the drawings as they would be built, nothing is written
 if (require.main !== module) module.exports = { art, centreOf };
