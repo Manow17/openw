@@ -31,6 +31,7 @@ OpenW used to be called Boostpad. On its first start it moves the old data folde
 | **Controller** | **OpenW Input**: a controller remapper with Steam Input's stick, trigger and button options and more, for any game, Epic or Steam. It reads your Xbox, DualShock 4, DualSense or DualSense Edge controller and plays the result on a virtual Xbox controller. Profiles, live view of what your stick does and what the game gets. See [OpenW Input](#openw-input). |
 | **Presets** | Save everything that is active and switch setups in one click. Unlimited. Copy a preset as a code to pass it on. |
 | **Swap queue** | Changes made while the game is running wait and go in when it closes. |
+| **Clips** | Press a key while you play and the last moments are saved as an MP4: several hotkeys, each with its own length. A library to watch, rename, trim and delete them. See [Clips](#clips). |
 | **Overlay** | Click-through windows over the game, shown only while Rocket League is the window in front. A now-playing pill for your music, and a top-down PS5, PS4 or Xbox controller (picked automatically from the one plugged in) that lights up with your inputs. Each has its own position (drag it, or pick a corner), size and look. |
 | **Profile** | A profile card with any name, title, colour, glow, rank badge and picture. It lives in the app. |
 | **Themes** | Dark or light. Both use the icon's turquoise; the light theme adds charcoal blocks. |
@@ -50,6 +51,14 @@ More than Steam: smoothing for a shaky stick, hair triggers, and rumble strength
 **Hiding the real controller**, so games do not get every press twice. With *Hide your controller from games* on (the default), OpenW hides every real controller from all apps except its helper while OpenW Input is on, through [HidHide](https://github.com/nefarius/HidHide/releases), and shows it again the moment OpenW Input turns off or OpenW quits (and on the next start, if OpenW was killed). HidHide needs no administrator rights for this, so there is no prompt. Its filter attaches to a controller when the controller connects, so the setup restarts the connected controllers right after installing it; a controller that was plugged in before HidHide arrived some other way needs one reconnect, and the page says so. Without HidHide, a PlayStation controller is instead opened for the helper alone, which works only if no other app (Steam, or Windows' own GameInput service) has it open.
 
 Rocket League's own controller dead zone is best turned down, since OpenW Input handles it.
+
+### Clips
+
+Turn clipping on in the Clips page; by default it runs only while Rocket League runs, and nothing is captured or encoded otherwise. While it runs, a hidden window captures the main screen (with your overlays) or only the Rocket League window, with the PC's sound and, if you want, your microphone. Chromium's MediaRecorder encodes it, on the graphics card when it can (H.264 on the test machine's RTX 3060). OpenW keeps the last seconds in memory, already encoded: enough for your longest hotkey.
+
+A hotkey (global, so it works while the game is in front; several, each with its own length, for example Alt+F9 for 30 seconds and Alt+F10 for 90) writes those seconds as an ordinary MP4 to the clips folder (`Videos\OpenW Clips` unless you pick another). A short "Clip saved" note and a chime show over the game. Nothing is re-encoded to save it: the recorder's fragments start on a keyframe every second, and OpenW joins the ones it needs into one MP4 with its sample tables at the front, so it plays and seeks in every player and shows its length in Explorer (`src/shared/mp4.js`). Trimming in the library works the same way, from keyframe to keyframe, and saves a copy. Deleting moves a clip to the Recycle Bin.
+
+Settings: what to record (screen or game window), resolution (native, 1440p, 1080p, 720p), 30 or 60 fps, bitrate, H.264 or AV1, PC sound and microphone with their volumes, the hotkeys, the folder, and the note and chime. On the test machine, 1080p60 at 12 Mbps with a 30-second buffer used about 4% of one CPU core and about 275 MB of memory. "Game and PC sound" is everything you hear, music and voice chat too: Windows offers no way to take only the game's sound from an app like OpenW.
 
 ### Music in the overlay
 
@@ -84,6 +93,7 @@ Changes are written while Rocket League is closed. The game keeps the arena file
 | Item catalog and pictures | Built from your own install (about 8,600 items on the test machine). Pictures are decoded from the game's thumbnail packages and cached: about two thirds with the built-in key, about 97% with a key list added |
 | Item swaps | **Experimental.** The package rewrite is tested structurally (see below) but nobody has yet confirmed the result in game |
 | Workshop maps | File replacement is tested; whether a given map loads depends on the file |
+| Clips | **New.** Capture, the memory buffer, saving, the MP4 writer, trimming and the library are tested (the MP4 against Chromium's player and Windows' own reader). Not yet checked while playing: the hotkeys over the running game, and the "Clip saved" note over it |
 | Overlays, profile | Working. The now-playing reader is tested against a real Windows media session (title, artist, cover, pause) and the controller drawing against a real pad; the overlays have not been checked over the running game |
 | OpenW Input | **New.** The stick maths matches Steam Input's (measured from the Steam client; tested). The helper reads a DualShock 4 over USB on the test machine, and the virtual controller works. The virtual controller, installing the bundled drivers, hiding (with or without HidHide), rumble, lightbars, Bluetooth, DualSense and Xbox controllers have not been checked yet: the test machine has no ViGEmBus, and Steam held the controller |
 | Map Merge | **Experimental.** The arena scan and the file replacement are tested; stadium and whole-arena merges have been checked in game on one or two arenas, not on every pair; built merges are covered by a round-trip test on a real map but not checked in game yet. Same arena every match is checked on one arena; the snowy versions are the game's own arenas |
@@ -177,8 +187,10 @@ src/main/core/   game.js (find game)  upk.js (package reader/patcher)  engine.js
                  looks.js (where the game finds each item's look; swaps and default items)
                  catalog.js (items)   labels.js (item names)   thumbs.js (item pictures)   arenas.js (map merge, snow)
                  library.js (workshop maps)  store.js (settings)
+src/main/        clips.js (clipping: recorder window, hotkeys, saving)  core/cliplib.js (clip library)
 src/main/        main.js (window, IPC)  preload.js  media.js + media.ps1 (now playing, via Windows)
                  input.js (runs the input helper, drivers, HidHide)
+src/shared/      mp4.js (clip buffer, MP4 writing and trimming)
 src/shared/      transform.js (OpenW Input's stick and trigger maths and profiles, used by the page and main)
 src/renderer/    app.js, styles.css, pad.js (controller drawing), overlay + nowplaying (overlay windows)
 native/          openw-input.cpp (the input helper; built to bin/ with `npm run build-input`)

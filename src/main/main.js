@@ -17,6 +17,8 @@ const T = require('../shared/transform');
 const inputLib = require('./input');
 const steamcfg = require('./core/steamcfg');
 const { Updater } = require('./updater');
+const { Clips } = require('./clips');
+const cliplib = require('./core/cliplib');
 // Steam's folder, from the registry (as Steam writes it), or the usual place
 const steamDir = () => new Promise((resolve) => require('child_process').execFile('reg', ['query', 'HKCU\\Software\\Valve\\Steam', '/v', 'SteamPath'], { windowsHide: true }, (err, out) => {
   const m = !err && /SteamPath\s+REG_SZ\s+(.+)/i.exec(String(out));
@@ -41,6 +43,7 @@ const DEFAULTS = {
   // own: hide the real controller from games while OpenW Input runs (HidHide when it is there,
   // otherwise PlayStation controllers are opened for OpenW alone); autoHidden: what is hidden now
   input: { on: false, own: true, profile: 'standard', profiles: [{ ...T.TEMPLATES.standard(), id: 'standard' }], autoHidden: [] },
+  clips: cliplib.DEFAULTS, // clipping: a hotkey saves the last seconds of the game (clips.js)
 };
 
 const arg = (name) => {
@@ -48,6 +51,7 @@ const arg = (name) => {
   return hit ? hit.slice(name.length + 3) : null;
 };
 const smokeShot = arg('smoke'); // --smoke=<png path>: render once, save a screenshot, quit
+const smokeClips = !!smokeShot && process.argv.includes('--smoke-clips'); // test hook: clipping runs in a smoke run
 if (arg('data')) app.setPath('userData', path.resolve(arg('data')));
 else moveOldData();
 
@@ -66,7 +70,7 @@ function moveOldData() {
   }
 }
 
-let win = null, settings, engine, maps, catalog = null, arenaList = null, running = false, updater = null;
+let win = null, settings, engine, maps, catalog = null, arenaList = null, running = false, updater = null, clips = null;
 
 // Errors go to openw.log in the data folder (the newest 200 KB), so a problem on someone's PC can be read.
 function logError(where, e) {
@@ -465,6 +469,7 @@ const api = {
     }
     if (key === 'theme') applyChrome();
     if (key === 'profile') syncOverlays(); // the card over the game shows the change
+    if (key === 'clips') { settings.set('clips', cliplib.complete(value)); if (clips && (!smokeShot || smokeClips)) clips.sync(); }
     return snapshot();
   },
 
@@ -785,6 +790,28 @@ const api = {
     return snapshot();
   },
   overlayConfig: (kind) => overlayPayload(kind),
+
+  // ---- clipping (clips.js) ----
+  clipsInfo: () => ({ status: clips.statusView(), list: clips.list() }),
+  async clipSaveNow(seconds) { return clips.save(seconds); },
+  clipRename: (file, name) => clips.rename(file, name),
+  clipDelete: (file) => clips.remove(file),
+  clipReveal: (file) => clips.reveal(file),
+  clipOpenFolder: () => clips.openFolder(),
+  clipTrim: (file, from, to) => clips.trim(file, from, to),
+  clipPicture: (file, dataUrl) => clips.picture(file, dataUrl),
+  clipKey: (text) => cliplib.normalizeKey(text), // '' when it cannot be a global hotkey
+  // while the page waits for a new hotkey, the old ones do not fire
+  clipKeysPaused(on) { clips.registerKeys(!on && clips.wanted()); return clips.statusView(); },
+  async clipPickFolder() {
+    const dir = await clips.pickFolder(win);
+    if (dir) api.setSetting('clips', { ...settings.get('clips'), folder: dir });
+    return snapshot();
+  },
+  // from the recorder window
+  clipReady: () => clips.recorderReady(),
+  clipStatus: (msg) => clips.recorderStatus(msg || {}),
+  clipWrite: (id, bytes, picture, error) => clips.write(id, bytes, picture, error),
   // let the user drag the overlays to where they want them
   overlayMove(on) { overlayEdit = !!on; syncOverlays(); return snapshot(); },
   overlayPreview() {
@@ -821,6 +848,7 @@ async function poll() {
   if (now === running) return;
   running = now;
   syncOverlays();
+  if (clips) clips.setGameRunning(running);
   let flushed = [], notice = '';
   if (!running) {
     lookData = null; // the game may have been updated
@@ -849,6 +877,11 @@ app.whenReady().then(async () => {
   });
   loadKeys();
   maps = new Maps(path.join(data, 'maps'));
+  settings.set('clips', cliplib.complete(settings.get('clips')));
+  clips = new Clips({
+    settings, userData: data, videos: app.getPath('videos'), preload: path.join(__dirname, 'preload.js'), renderer: path.join(__dirname, '../renderer'), icon: ICON,
+    isGameRunning: () => running, notify: (payload) => send('clips', payload), log: logError,
+  });
   updater = new Updater({ current: app.getVersion(), dir: path.join(data, 'updates') });
   updater.on('change', () => send('state', { state: snapshot(), flushed: [] }));
   delete settings.data.steamInput; // the old Steam Input route is gone
@@ -926,7 +959,10 @@ app.whenReady().then(async () => {
     // test runs render offscreen, which keeps animations running so the screenshot is truthful
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, offscreen: !!smokeShot },
   });
-  win.on('closed', () => { for (const w of Object.values(overlayWins)) if (w && !w.isDestroyed()) w.destroy(); });
+  win.on('closed', () => {
+    for (const w of Object.values(overlayWins)) if (w && !w.isDestroyed()) w.destroy();
+    if (clips) clips.quit(); // its hidden windows would keep OpenW running
+  });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   // test hook, smoke mode only: --smoke-page=nowplaying screenshots an overlay page instead of the app
@@ -938,6 +974,12 @@ app.whenReady().then(async () => {
   if (smokeShot) {
     const errors = [];
     win.webContents.on('console-message', (e) => { if (e.level === 'error') errors.push(e.message); });
+    if (smokeClips) {
+      clips.gameRunning = true; clips.sync();
+      // what clipping costs: CPU of OpenW's processes over the last seconds of the run
+      setTimeout(() => app.getAppMetrics(), 9000);
+      setTimeout(() => console.log(JSON.stringify({ clipMetrics: app.getAppMetrics().map((m) => ({ type: m.type, cpu: Math.round(m.cpu.percentCPUUsage), mb: Math.round(m.memory.workingSetSize / 1024), privateMb: Math.round((m.memory.privateBytes || 0) / 1024) })) })), 15000);
+    }
     // test hook, smoke mode only: --smoke-eval=<file.js> runs in the page before the screenshot
     if (arg('smoke-eval')) setTimeout(() => win.webContents.executeJavaScript(fs.readFileSync(arg('smoke-eval'), 'utf8')).catch((e) => errors.push(String(e))), 1200);
     setTimeout(async () => {
@@ -950,6 +992,8 @@ app.whenReady().then(async () => {
   syncOverlays();
   syncPadFeed();
   startMedia();
+  clips.gameRunning = running;
+  clips.sync();
   setInterval(poll, 4000);
   // updates: only an installed OpenW updates itself (a copy run from the source folder does not)
   if (app.isPackaged) {
@@ -965,6 +1009,7 @@ app.on('will-quit', () => {
   // a downloaded update goes in when OpenW closes (the setup starts OpenW again afterwards)
   if (installOnQuit && updater && settings && settings.get('updates').auto && updater.state.status === 'ready') updater.install({ wait: false });
   if (mediaWatcher) mediaWatcher.stop();
+  if (clips) clips.quit();
   input.stop();
   reader.stop();
   // the real controller must not stay hidden once OpenW is gone

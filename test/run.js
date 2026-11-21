@@ -889,6 +889,95 @@ function makeEngine(cooked, running = { value: false }) {
     for (const id of ['path1056', 'path1058', 'path1052']) assert.ok(ps5.indexOf(`ps5-${id}"`) < ps5.indexOf('ps5-ButtonBack"'), `${id} is drawn below the create button`);
   });
 
+  /* ---------- clips ---------- */
+  const mp4 = require('../src/shared/mp4');
+  const cliplib = require('../src/main/core/cliplib');
+  // 4.2 s recorded by Chromium's MediaRecorder (a counter on a canvas and a tone), as the recorder gets it
+  const sample = () => new Uint8Array(fs.readFileSync(path.join(__dirname, 'fixtures', 'recorder-sample.mp4')));
+
+  test('clips: the last seconds are kept as they arrive and saved as an ordinary MP4 that starts on a keyframe', () => {
+    const raw = sample();
+    const ring = new mp4.Ring(60);
+    for (let i = 0; i < raw.length; i += 3001) ring.push(raw.subarray(i, i + 3001)); // pieces that cut boxes in half
+    assert.ok(ring.frags.length >= 4 && ring.frags.every((f) => f.sync), 'fragments start on keyframes');
+    assert.ok(Math.abs(ring.seconds - 4.2) < 0.3, `holds ${ring.seconds}`);
+    const clip = ring.clip(2);
+    const top = mp4.boxes(clip).map((b) => b.type);
+    assert.deepStrictEqual(top, ['ftyp', 'moov', 'mdat'], 'one moov at the front, one mdat: plays and seeks everywhere');
+    const m = mp4.fromFile(clip);
+    const d = mp4.duration(m);
+    assert.ok(d >= 2 && d < 3.2, `a 2 second clip is ${d} s`);
+    const video = m.tracks.find((t) => t.handler === 'vide'), audio = m.tracks.find((t) => t.handler === 'soun');
+    assert.ok(video.samples[0].sync, 'starts on a keyframe');
+    assert.ok(audio && audio.samples.length > 0, 'with its sound');
+    // longer than what is held: everything there is
+    assert.ok(Math.abs(mp4.duration(mp4.fromFile(ring.clip(60))) - mp4.duration(mp4.fromFile(raw))) < 0.05);
+    // an old part is dropped once it is not needed
+    const short = new mp4.Ring(1);
+    short.push(raw);
+    assert.ok(short.frags.length < ring.frags.length && short.seconds >= 1, `keeps ${short.seconds} s for a 1 s ring`);
+  });
+
+  test('clips: an MP4 file reads back sample for sample, and a trim cuts on keyframes without re-encoding', () => {
+    const raw = sample();
+    const model = mp4.fromFile(raw); // a fragmented file reads too
+    const flat = mp4.join(mp4.toFile(model));
+    const again = mp4.fromFile(flat);
+    assert.deepStrictEqual(again.tracks.map((t) => t.samples.length), model.tracks.map((t) => t.samples.length));
+    for (let i = 0; i < model.tracks.length; i++) {
+      const a = model.tracks[i].samples, b = again.tracks[i].samples;
+      assert.ok(a.every((s, k) => s.dur === b[k].dur && s.sync === b[k].sync && Buffer.compare(Buffer.from(s.data), Buffer.from(b[k].data)) === 0), `track ${i} samples are the same`);
+    }
+    assert.ok(Buffer.from(mp4.join(mp4.toFile(again))).equals(Buffer.from(flat)), 'writing is stable');
+    const part = mp4.cut(again, 1.5, 3);
+    const video = part.tracks.find((t) => t.handler === 'vide');
+    assert.ok(video.samples[0].sync && part.start <= 1.5 && part.start > 0.3, `starts on the keyframe before 1.5 s (${part.start})`);
+    const d = mp4.duration(part);
+    assert.ok(Math.abs(d - (3 - part.start)) < 0.1, `${d} s`);
+  });
+
+  test('clips: hotkeys, names and settings are kept to what works', () => {
+    const k = cliplib.normalizeKey;
+    assert.deepStrictEqual(['alt+f9', 'F8', 'ctrl+shift+s', 'Control+Alt+1', 'win+g', 'Alt+num5'].map(k), ['Alt+F9', 'F8', 'Ctrl+Shift+S', 'Ctrl+Alt+1', 'Super+G', 'Alt+num5']);
+    for (const bad of ['x', '5', 'Ctrl+Alt', 'Alt+F9+F10', '', 'Alt+Ü', null]) assert.strictEqual(k(bad), '', String(bad)); // a letter alone would stop working everywhere
+    assert.deepStrictEqual(cliplib.clashes([{ key: 'Alt+F9' }, { key: 'alt+f9' }, { key: 'F8' }]), ['alt+f9']);
+    const c = cliplib.complete({ fps: 45, mbps: 500, res: 4000, codec: 'x', keys: [{ key: 'x', seconds: 30 }, { key: 'alt+f10', seconds: 7 }], on: 1 });
+    assert.deepStrictEqual([c.fps, c.mbps, c.res, c.codec, c.on], [60, 80, '1080', 'h264', true]);
+    assert.deepStrictEqual(c.keys, [{ key: 'Alt+F10', seconds: 30 }], 'a key that cannot work is dropped, an odd length becomes 30 s');
+    assert.strictEqual(cliplib.keepSeconds({ keys: [{ key: 'F8', seconds: 15 }, { key: 'F9', seconds: 120 }] }), 120);
+    assert.strictEqual(cliplib.cleanName('  my: goal / save?.  '), 'my goal save');
+    const dir = fs.mkdtempSync(path.join(tmp, 'clips-'));
+    const when = new Date(2026, 10, 21, 21, 5, 9);
+    assert.strictEqual(cliplib.clipName(dir, when), 'Rocket League 2026-11-21 21-05-09.mp4');
+    fs.writeFileSync(path.join(dir, 'Rocket League 2026-11-21 21-05-09.mp4'), '');
+    assert.strictEqual(cliplib.clipName(dir, when), 'Rocket League 2026-11-21 21-05-09 (2).mp4');
+  });
+
+  test('clips: the library lists, renames and trims clips in its folder, and nothing outside it', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'lib-')), thumbs = path.join(dir, 'thumbs');
+    const raw = sample();
+    const file = path.join(dir, 'Rocket League 2026-11-21 21-00-00.mp4');
+    fs.writeFileSync(file, mp4.join(mp4.toFile(mp4.fromFile(raw))));
+    fs.mkdirSync(thumbs);
+    fs.writeFileSync(cliplib.thumbFile(thumbs, file), 'jpg');
+    fs.writeFileSync(path.join(dir, 'notes.txt'), 'not a clip');
+    let list = cliplib.listClips(dir, thumbs);
+    assert.deepStrictEqual(list.map((x) => x.name), ['Rocket League 2026-11-21 21-00-00']);
+    assert.ok(Math.abs(list[0].seconds - 4.2) < 0.2 && list[0].thumb, 'length from the file, and its picture');
+    const renamed = cliplib.renameClip(dir, thumbs, file, 'Ceiling shot');
+    assert.strictEqual(path.basename(renamed), 'Ceiling shot.mp4');
+    assert.ok(fs.existsSync(cliplib.thumbFile(thumbs, renamed)), 'the picture follows');
+    const { file: cut, start } = cliplib.trimClip(dir, thumbs, renamed, 2, 3.5);
+    assert.strictEqual(path.basename(cut), 'Ceiling shot (trimmed).mp4');
+    assert.ok(Math.abs(cliplib.mp4Seconds(cut) - (3.5 - start)) < 0.1);
+    list = cliplib.listClips(dir, thumbs);
+    assert.strictEqual(list.length, 2);
+    // the page only names files from the list: anything else is refused
+    assert.throws(() => cliplib.renameClip(dir, thumbs, path.join(tmp, 'elsewhere.mp4'), 'x'), /not in the clips folder/);
+    assert.throws(() => cliplib.trimClip(dir, thumbs, path.join(dir, 'notes.txt'), 0, 1), /not in the clips folder/);
+    assert.throws(() => cliplib.renameClip(dir, thumbs, renamed, 'Ceiling shot (trimmed)'), /already exists/);
+  });
+
   /* ---------- OpenW Input ---------- */
   const TX = require('../src/shared/transform');
   const inputLib = require('../src/main/input');
