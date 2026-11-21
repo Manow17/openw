@@ -621,6 +621,27 @@ function makeEngine(cooked, running = { value: false }) {
     assert.strictEqual(readLabels(path.join(tmp, 'nowhere')).size, 0, 'a missing text file gives no labels, not an error');
   });
 
+  test('a value typed next to a slider is clamped to its range and snapped to its step', () => {
+    const { typedValue } = require('../src/shared/values');
+    // percent sliders (0.1 steps): "20", "20%", " 80.1 % " and "80,1" all work
+    assert.strictEqual(typedValue('20', 0, 97.7, 0.1), 20);
+    assert.strictEqual(typedValue('20%', 0, 97.7, 0.1), 20);
+    assert.strictEqual(typedValue(' 80.1 % ', 0, 100, 0.1), 80.1);
+    assert.strictEqual(typedValue('80,1', 0, 100, 0.1), 80.1);
+    assert.strictEqual(typedValue('33.33', 0, 100, 0.1), 33.3);
+    // out of range: the nearest end
+    assert.strictEqual(typedValue('150', 0, 97.7, 0.1), 97.7);
+    assert.strictEqual(typedValue('-5', 0, 100, 0.1), 0);
+    assert.strictEqual(typedValue('0', 0.003, 100, 0.1), 0.003);
+    // whole-number sliders round, ranges that do not start at 0 snap from their start
+    assert.strictEqual(typedValue('42.6', 0, 200, 1), 43);
+    assert.strictEqual(typedValue('10', 20, 100, 1), 20);
+    assert.strictEqual(typedValue('251', 25, 375, 1), 251);
+    // "off" is the lowest value (Smoothing shows 0 as Off); anything else is ignored
+    assert.strictEqual(typedValue('Off', 0, 100, 1), 0);
+    for (const junk of ['', 'abc', '%', null, '1e400']) assert.strictEqual(typedValue(junk, 0, 100, 1), null, String(junk));
+  });
+
   /* ---------- OpenW Input ---------- */
   const TX = require('../src/shared/transform');
   const inputLib = require('../src/main/input');

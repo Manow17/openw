@@ -288,6 +288,11 @@ main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-heigh
 .ctl .lbl.grow { width: auto; flex: 1; min-width: 0; }
 .ctl .sub { margin-top: 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .ctl .val { width: 52px; text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+/* a slider's number: click it to type a value */
+.typeable { cursor: text; border-radius: 6px; padding: 1px 4px; margin: -1px -4px; transition: background .15s, color .15s; }
+.typeable:hover { background: var(--tile-2); color: var(--text); }
+.typeable:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.valbox { all: unset; box-sizing: border-box; width: 100%; min-width: 44px; max-width: 64px; height: 24px; padding: 0 6px; border-radius: 6px; background: var(--tile-2); color: var(--text); border: 1px solid var(--accent-text); font: inherit; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; cursor: text; }
 .ctl canvas { align-self: center; display: block; }
 .stickmap { cursor: crosshair; touch-action: none; }
 .mono { font-variant-numeric: tabular-nums; text-align: center; min-height: 16px; }

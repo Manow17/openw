@@ -132,6 +132,49 @@ function slider(min, max, value, onchange, oninput, step = 1) {
   return el;
 }
 
+// The number shown next to a slider, made typeable: click it (or Enter on it), type a value,
+// Enter. The value is clamped to the slider's range and snapped to its step, then goes through
+// the slider's own input and change events, so it is shown and saved exactly as dragging does.
+// Escape leaves it as it was; clicking away keeps what was typed.
+const clampToRange = (text, range) => window.OpenWValues.typedValue(text, Number(range.min), Number(range.max), Number(range.step) || 1);
+function typeable(label, range) {
+  label.classList.add('typeable');
+  label.tabIndex = 0;
+  label.title = 'Click to type a value';
+  const edit = () => {
+    if (label.querySelector('input')) return;
+    const shown = [...label.childNodes];
+    const box = h('input', { class: 'valbox', type: 'text', inputmode: 'decimal', spellcheck: 'false', value: range.value, 'aria-label': 'Type a value' });
+    let done = false;
+    const finish = (commit) => {
+      if (done) return;
+      done = true;
+      const v = commit ? clampToRange(box.value, range) : null;
+      label.replaceChildren(...shown);
+      if (v != null && v !== Number(range.value)) {
+        range.value = v;
+        range.dispatchEvent(new Event('input'));
+        range.dispatchEvent(new Event('change'));
+      }
+      if (pendingRender) { pendingRender = false; render(); }
+    };
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); if (label.isConnected) label.focus(); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); label.focus(); }
+    });
+    box.addEventListener('blur', () => finish(true));
+    label.replaceChildren(box);
+    box.focus();
+    box.select();
+  };
+  label.addEventListener('click', edit);
+  label.addEventListener('keydown', (e) => { if (e.target === label && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); edit(); } });
+  return label;
+}
+// a value being typed is not thrown away by a page refresh: the refresh waits until it is done
+let pendingRender = false;
+const typing = () => !!(document.activeElement && document.activeElement.classList.contains('valbox'));
+
 const seg = (options, value, onchange) => h('div', { class: 'seg', role: 'radiogroup' }, options.map(([v, label]) =>
   h('button', { class: v === value ? 'on' : '', role: 'radio', 'aria-checked': String(v === value), onclick: () => v !== value && onchange(v) }, label)));
 
@@ -228,6 +271,7 @@ function setTheme(mode) {
 
 let shown = null; // which page the view currently holds, to animate only on page changes
 function render(animate) {
+  if (typing()) { pendingRender = true; return; }
   closeMenu();
   document.documentElement.dataset.theme = themeMode();
   const nav = document.getElementById('nav'), top = document.getElementById('top'), view = document.getElementById('view');
@@ -822,15 +866,15 @@ views.controller = () => {
   const lbl = (title, sub, grow) => h('div', { class: `lbl${grow ? ' grow' : ''}` }, h('b', {}, title), sub && h('div', { class: 'muted small' }, sub));
   const valRow = (title, sub, obj, key, min, max, fmt = (v) => String(v), step = 1) => {
     const val = h('span', { class: 'val' }, fmt(obj[key]));
-    return h('div', { class: 'opt-row' }, lbl(title, sub),
-      slider(min, max, obj[key], (v) => { obj[key] = v; save(); }, (v) => { obj[key] = v; val.textContent = fmt(v); preview(); }, step), val);
+    const range = slider(min, max, obj[key], (v) => { obj[key] = v; save(); }, (v) => { obj[key] = v; val.textContent = fmt(v); preview(); }, step);
+    return h('div', { class: 'opt-row' }, lbl(title, sub), range, typeable(val, range));
   };
   // a value in Steam's units, shown and set as % of the stick's travel or the trigger's pull
   const pctRow = (title, sub, obj, key, min, max) => {
     const units = (v) => Math.max(min, Math.min(max, fromPct(v)));
     const val = h('span', { class: 'val' }, `${pct(obj[key])}%`);
-    return h('div', { class: 'opt-row' }, lbl(title, sub),
-      slider(pct(min), pct(max), pct(obj[key]), (v) => { obj[key] = units(v); save(); }, (v) => { obj[key] = units(v); val.textContent = `${pct(obj[key])}%`; preview(); }, 0.1), val);
+    const range = slider(pct(min), pct(max), pct(obj[key]), (v) => { obj[key] = units(v); save(); }, (v) => { obj[key] = units(v); val.textContent = `${pct(obj[key])}%`; preview(); }, 0.1);
+    return h('div', { class: 'opt-row' }, lbl(title, sub), range, typeable(val, range));
   };
   const choiceRow = (title, sub, control) => h('div', { class: 'opt-row' }, lbl(title, sub, true), control);
   const flip = (obj, key) => toggle(obj[key], (v) => { obj[key] = v; save(); preview(); });
@@ -1070,7 +1114,11 @@ views.overlay = () => {
   if (!sources) api('mediaSources').then((list) => { sources = list; if (ui.tab === 'overlay') render(); });
   const place = (kind) => h('div', { class: 'opt-row' }, h('div', { class: 'grow' }, h('b', {}, 'Position'), h('div', { class: 'muted small' }, o[kind].x == null ? 'Default place. Pick a corner, or use Move overlays to drag it.' : `Custom: ${o[kind].x}, ${o[kind].y}`)),
     select([['', o[kind].x == null ? 'Default' : 'Custom'], ...ANCHORS, ...(o[kind].x == null ? [] : [['reset', 'Back to default']])], '', (anchor) => anchor && run(() => api('overlayAnchor', kind, anchor)), 170));
-  const sizeRow = (kind, min, max) => { const label = h('div', { class: 'muted small' }, `${o[kind].size}%`); return h('div', { class: 'opt-row' }, h('div', { style: 'width:120px' }, h('b', {}, 'Size'), label), slider(min, max, o[kind].size, (v) => upd(kind, { size: v }), (v) => { label.textContent = `${v}%`; })); };
+  const sizeRow = (kind, min, max) => {
+    const label = h('div', { class: 'muted small' }, `${o[kind].size}%`);
+    const range = slider(min, max, o[kind].size, (v) => upd(kind, { size: v }), (v) => { label.textContent = `${v}%`; });
+    return h('div', { class: 'opt-row' }, h('div', { style: 'width:120px' }, h('b', {}, 'Size'), h('div', {}, typeable(label, range))), range);
+  };
 
   // --- music ---
   const cover = h('div', { class: 'cover sm' }), name = h('b', { class: 'clip' }), artist = h('div', { class: 'muted small clip' }), fill = h('i'), time = h('span', { class: 'muted small' });
@@ -1102,6 +1150,7 @@ views.overlay = () => {
   Pad.style(preview, o.pad);
   const look = PAD_LOOKS.find(([, body, keys]) => body === o.pad.body && keys === o.pad.keys);
   const opacityLabel = h('div', { class: 'muted small' }, `${o.pad.opacity}%`);
+  const opacity = slider(20, 100, o.pad.opacity, (v) => upd('pad', { opacity: v }), (v) => { opacityLabel.textContent = `${v}%`; Pad.style(preview, { ...o.pad, opacity: v }); });
   const padTile = tile(`s6${o.pad.on ? ' ink' : ''}`, head('Controller', toggle(o.pad.on, (v) => upd('pad', { on: v }))),
     h('p', { class: 'muted' }, 'Shows every button, trigger and stick you press. Press something on your controller to try it here.'),
     preview,
@@ -1111,8 +1160,7 @@ views.overlay = () => {
       select(PAD_LOOKS.map(([label]) => [label, label]).concat(look ? [] : [['', 'Custom']]), look ? look[0] : '', (v) => { const pick = PAD_LOOKS.find(([label]) => label === v); if (pick) upd('pad', { body: pick[1], keys: pick[2] }); }, 170)),
     h('div', { class: 'opt-row' }, h('div', { class: 'grow' }, h('b', {}, 'Pressed colour'), h('div', { class: 'muted small' }, 'What a button lights up in.')),
       h('div', { class: 'swatches' }, GLOWS.map((c) => h('button', { class: `swatch${o.pad.glow === c ? ' on' : ''}`, style: `background:${c}`, 'aria-label': c, onclick: () => upd('pad', { glow: c }) })))),
-    h('div', { class: 'opt-row' }, h('div', { style: 'width:120px' }, h('b', {}, 'Opacity'), opacityLabel),
-      slider(20, 100, o.pad.opacity, (v) => upd('pad', { opacity: v }), (v) => { opacityLabel.textContent = `${v}%`; Pad.style(preview, { ...o.pad, opacity: v }); })),
+    h('div', { class: 'opt-row' }, h('div', { style: 'width:120px' }, h('b', {}, 'Opacity'), h('div', {}, typeable(opacityLabel, opacity))), opacity),
     sizeRow('pad', 50, 200), place('pad'));
 
   overlayUI = { paint, tick, preview, root: padTile, shownModel };
