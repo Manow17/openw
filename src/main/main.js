@@ -244,11 +244,21 @@ function everyFileSize(chosen, list, changes) {
   }
   return fileSize(engine.pristine(arenas.effectiveArena(chosen, list, changes).file));
 }
-// The every-match ops for an arena, under the name of its merge if it has one.
-function everyOpsFor(chosen, list, changes) {
+// The every-match ops for an arena, under the name of its merge if it has one. An arena whose
+// file OpenW cannot open (it needs a key list) cannot be written over, so it keeps its own look
+// (skipped); locked: files of the chosen arena itself that cannot be opened.
+function everyPlan(chosen, list, changes) {
   const merge = arenas.mergedArenas(list, changes).find((m) => m.arena.id === chosen.id);
-  return arenas.everyMatchOps(chosen, list, changes, merge ? merge.label : chosen.name);
+  const all = arenas.everyMatchOps(chosen, list, changes, merge ? merge.label : chosen.name);
+  const blocked = (op) => arenas.lockedFiles(list, [op.gameFile]).length > 0;
+  const source = all[0] ? [all[0].from, all[0].sourceGameFile] : [];
+  return {
+    ops: all.filter((op) => !blocked(op)),
+    skipped: all.filter(blocked).map((op) => (list.find((a) => a.file.toLowerCase() === op.gameFile.toLowerCase()) || { name: op.gameFile }).name),
+    locked: arenas.lockedFiles(list, [chosen.file, arenas.effectiveArena(chosen, list, changes).file, ...source]),
+  };
 }
+const everyOpsFor = (chosen, list, changes) => everyPlan(chosen, list, changes).ops;
 // Every match is out of date when a merge was made, changed or reverted since it was turned on.
 function everyMatchStale(list, changes) {
   const on = [...changes.values()].filter((op) => op.group === 'everymatch');
@@ -450,13 +460,15 @@ const api = {
     // per arena: how many files every match replaces, and the disk space those take (the
     // originals are kept as backups, so that is what it adds)
     const every = all.filter((c) => c.arena.standard).map((c) => {
-      const files = everyOpsFor(c.arena, list, changes).length;
-      return { id: c.arena.id, label: c.label, merged: c.merged, files, bytes: files * everyFileSize(c.arena, list, changes) };
+      const plan = everyPlan(c.arena, list, changes), files = plan.ops.length;
+      const size = plan.locked.length ? 0 : everyFileSize(c.arena, list, changes);
+      return { id: c.arena.id, label: c.label, merged: c.merged, files, bytes: files * size, skipped: plan.skipped, locked: arenas.lockedMessage(plan.locked) };
     });
     const snow = [], noSnow = [];
     for (const c of all.filter((x) => x.arena.playable)) {
       const plan = arenas.snowPlan(c.arena, list, changes);
-      if (plan) snow.push({ id: c.arena.id, label: c.label, merged: c.merged, how: plan.how, snowy: plan.snowy, play: plan.play.map((a) => a.name) });
+      const locked = plan ? arenas.lockedMessage(arenas.lockedFor(list, [c.arena], [plan.op])) : '';
+      if (plan) snow.push({ id: c.arena.id, label: c.label, merged: c.merged, how: plan.how, snowy: plan.snowy, play: plan.play.map((a) => a.name), locked });
       else if (c.merged) noSnow.push(c.label);
     }
     return { every, everyStale: everyMatchStale(list, changes), snow, noSnow };
@@ -466,7 +478,8 @@ const api = {
     const list = api.arenas(), chosen = list.find((a) => a.id === id);
     if (!chosen) throw new Error('Arena not found');
     const changes = arenaChanges();
-    const ops = everyOpsFor(chosen, list, changes);
+    const { ops, skipped, locked } = everyPlan(chosen, list, changes);
+    if (locked.length) throw new Error(arenas.lockedMessage(locked));
     // an arena chosen before: files the new choice does not write go back, so none keeps the old
     // one; the others are written over (their backup stays the original)
     for (const q of engine.list().queue) if (q.op && q.op.group === 'everymatch') engine.unqueue(q.key);
@@ -476,7 +489,7 @@ const api = {
       queued = (await engine.apply(op)).queued || queued;
       send('progress', { what: 'every', done: i + 1, total: ops.length });
     }
-    return { queued, state: snapshot() };
+    return { queued, skipped, state: snapshot() };
   },
   async everyMatchOff() {
     for (const q of engine.list().queue) if (q.op && q.op.group === 'everymatch') engine.unqueue(q.key);
@@ -486,13 +499,22 @@ const api = {
   // How a merge would be done, for the page to describe before anything is written.
   mergePlan(stadiumId, placeId) {
     const list = api.arenas(), find = (id) => list.find((a) => a.id === id);
-    const plan = arenas.mergePlan(find(stadiumId), find(placeId), list);
-    return { how: plan.how, reason: plan.reason, note: plan.note, files: plan.ops ? plan.ops.length : 0, play: (plan.play || []).map((a) => a.name) };
+    const stadium = find(stadiumId), place = find(placeId);
+    const plan = arenas.mergePlan(stadium, place, list);
+    // files it would have to read that the keys OpenW has cannot open: said before Merge is pressed
+    const locked = plan.how === 'none' ? [] : arenas.lockedFor(list, [stadium, place], plan.ops);
+    return { how: plan.how, reason: plan.reason, note: plan.note, files: plan.ops ? plan.ops.length : 0, play: (plan.play || []).map((a) => a.name), locked, lockedText: arenas.lockedMessage(locked) };
   },
   async mergeArenas(stadiumId, placeId) {
     const list = api.arenas(), find = (id) => list.find((a) => a.id === id);
     const stadium = find(stadiumId), place = find(placeId);
     if (!stadium || !place) throw new Error('Arena not found');
+    // nothing is written when a file it needs cannot be opened, so no half merge is left behind
+    const first = arenas.mergePlan(stadium, place, list);
+    if (first.how !== 'none') {
+      const locked = arenas.lockedFor(list, [stadium, place], first.ops);
+      if (locked.length) throw new Error(arenas.lockedMessage(locked));
+    }
     // read both maps: where each stadium is, and which of the stadium arena's parts hold none of it
     const opened = new Map();
     const open = (file) => {
@@ -508,6 +530,8 @@ const api = {
     opened.clear();
     const plan = arenas.mergePlan(stadium, place, list, info);
     if (plan.how === 'none') throw new Error(plan.reason);
+    const locked = arenas.lockedFor(list, [stadium, place], plan.ops);
+    if (locked.length) throw new Error(arenas.lockedMessage(locked));
     // a merge made before for this pair goes first, so no file of the old one stays
     for (const rec of engine.list().active) if (rec.op.group === plan.ops[0].group && !plan.ops.some((o) => o.gameFile.toLowerCase() === rec.key)) await engine.revert(rec.key);
     let queued = false;
@@ -525,6 +549,8 @@ const api = {
     if (!arena) throw new Error('Arena not found');
     const plan = arenas.snowPlan(arena, list, arenaChanges());
     if (!plan) throw new Error('This arena has no file where snow can go');
+    const locked = arenas.lockedFor(list, [arena], [plan.op]);
+    if (locked.length) throw new Error(arenas.lockedMessage(locked));
     return api.apply(plan.op);
   },
 
@@ -694,6 +720,7 @@ const api = {
     loadKeys();
     retryMissingThumbs();
     catalog = null;
+    arenaList = null; // arenas the old keys could not open (and their parts) are read again
     return snapshot();
   },
   overlayConfig: (kind) => overlayPayload(kind),

@@ -24,6 +24,19 @@ class EngineError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
+// Reading a package OpenW has no key for says which file it is and what fixes it, instead of
+// the bare "could not decrypt the package header".
+function readable(file, fn) {
+  try { return fn(); } catch (e) {
+    if (e.code === 'NO_KEY') {
+      const err = new EngineError('NO_KEY', `OpenW cannot open ${file} with the one key it comes with. Add a key list in Settings, under Item pictures and keys, and try again.`);
+      err.file = file;
+      throw err;
+    }
+    throw e;
+  }
+}
+
 class Engine {
   constructor({ store, backupDir, getCookedDir, isRunning, getKeys = () => [] }) {
     Object.assign(this, { store, backupDir, getCookedDir, isRunning, getKeys });
@@ -69,7 +82,11 @@ class Engine {
   destinationKey(fileName) {
     try { return upk.keyOfFile(this.pristine(fileName), this.getKeys()); }
     catch (e) {
-      if (e.code === 'NO_KEY') throw new EngineError('NO_KEY', `OpenW cannot read ${fileName}, so it cannot write over it. Adding a key list in Settings may help.`);
+      if (e.code === 'NO_KEY') {
+        const err = new EngineError('NO_KEY', `OpenW cannot open ${fileName} with the one key it comes with, so it cannot write over it. Add a key list in Settings, under Item pictures and keys, and try again.`);
+        err.file = fileName;
+        throw err;
+      }
       return null; // not an encrypted package: written as it is
     }
   }
@@ -92,7 +109,7 @@ class Engine {
       if (!fs.existsSync(from)) throw new EngineError('NO_SUCH_GAME_FILE', `${op.sourceGameFile} is not in the game folder`);
       const key = this.destinationKey(op.gameFile);
       const buf = fs.readFileSync(from);
-      return key ? upk.reencrypt(buf, key, this.getKeys()) : buf;
+      return key ? readable(op.sourceGameFile, () => upk.reencrypt(buf, key, this.getKeys())) : buf;
     }
     if (op.kind !== 'swap') throw new EngineError('BAD_OP', `Unknown operation "${op.kind}"`);
     if (op.sourceFile.toLowerCase() === op.targetFile.toLowerCase()) {
@@ -161,7 +178,7 @@ class Engine {
     const sig = JSON.stringify([from, st.size, st.mtimeMs, op.side, opts]);
     if (!this.lastBuild || this.lastBuild.sig !== sig) {
       this.lastBuild = null; // the previous one goes before the next is read
-      const pkg = mapbuild.open(fs.readFileSync(from), this.getKeys());
+      const pkg = readable(op.from, () => mapbuild.open(fs.readFileSync(from), this.getKeys()));
       mapbuild.keepSide(pkg, op.side, opts);
       this.lastBuild = { sig, pkg, zipped: mapbuild.zipChunks(pkg) };
     }

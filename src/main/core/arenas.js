@@ -65,8 +65,8 @@ function scanArenas(cookedDir, cache = {}, extraKeys = [], names = new Map(), re
     let size;
     try { size = fs.statSync(where(file)).size; } catch { continue; } // a file that cannot be read is left out
     let entry = cache[file];
-    if (!entry || entry.size !== size) {
-      let parts = [];
+    if (!entry || entry.size !== size || entry.locked === undefined) {
+      let parts = [], locked = false;
       try {
         // a part is another package this map names that belongs to the same arena family
         // ("Mall_Day_P" loads "Mall_Field") and is not an arena map itself
@@ -74,8 +74,8 @@ function scanArenas(cookedDir, cache = {}, extraKeys = [], names = new Map(), re
         parts = [...new Set(upk.readNamesFile(where(file), extraKeys).map((n) => n.toLowerCase()))]
           .filter((n) => n !== base.toLowerCase() && n.startsWith(family) && byLower.has(n) && !isMap(byLower.get(n)))
           .map((n) => byLower.get(n));
-      } catch { /* unreadable map: listed without parts */ }
-      entry = cache[file] = { size, parts };
+      } catch (e) { locked = e.code === 'NO_KEY'; } // unreadable map: listed without parts
+      entry = cache[file] = { size, parts, locked };
     }
     const parts = entry.parts.filter((p) => byLower.has(p.replace(/\.upk$/i, '').toLowerCase()))
       .map((p) => ({ file: p, kind: partKind(p.replace(/\.upk$/i, '')) }));
@@ -85,6 +85,9 @@ function scanArenas(cookedDir, cache = {}, extraKeys = [], names = new Map(), re
       playable: names.has(id), // the game lists it as an arena you can play
       standard: names.has(id) && !NOT_STANDARD.test(id),
       field: (parts.find((p) => p.kind === 'field') || {}).file || null, parts,
+      // files of this arena that the keys OpenW has cannot open (a key list in Settings opens
+      // them); a locked main file also hides which parts the arena has
+      locked: [...(entry.locked ? [file] : []), ...parts.filter((p) => !upk.probeFile(where(p.file), extraKeys)).map((p) => p.file)],
     });
   }
   // names the game gives several files are told apart by their file name
@@ -227,6 +230,39 @@ function mergeInfo(stadium, place, open, mapbuild) {
   };
 }
 
+/* ---------- files that need a key list ----------
+ * Rocket League encrypts its packages with many keys; OpenW ships one, and opens the rest with
+ * a key list the user adds in Settings. A change that has to read a locked file cannot be built,
+ * so it is checked before anything is written, and the page says which arena is in the way. */
+
+// The game files an op reads: what it is built or copied from, and the file it writes over (it
+// is written with that file's own key, read from the file).
+const opReads = (op) => [op.from, op.sourceGameFile, op.create ? null : op.gameFile].filter(Boolean);
+
+// Which of `files` (arena files and parts) cannot be opened: [{ file, arena }], one per file.
+function lockedFiles(arenas, files) {
+  const owner = new Map();
+  for (const a of arenas) for (const f of a.locked || []) if (!owner.has(f.toLowerCase())) owner.set(f.toLowerCase(), { file: f, arena: a.name });
+  const out = new Map();
+  for (const f of files) { const hit = owner.get(String(f).toLowerCase()); if (hit) out.set(hit.file, hit); }
+  return [...out.values()];
+}
+
+// What a merge, snow or every-match change would need to read and cannot: both arenas' own
+// files (a locked map also hides which parts it has, so the plan itself would be wrong) and
+// everything its ops read.
+function lockedFor(arenas, involved, ops) {
+  return lockedFiles(arenas, [...involved.map((a) => a.file), ...ops.flatMap(opReads)]);
+}
+
+// In words, for the page and for an error: which arena file cannot be opened and what fixes it.
+function lockedMessage(locked) {
+  if (!locked.length) return '';
+  const what = locked.map((l) => `${l.arena}’s file ${l.file}`);
+  const list = what.length > 1 ? `${what.slice(0, -1).join(', ')} and ${what[what.length - 1]}` : what[0];
+  return `OpenW cannot open ${list} with the one key it comes with. Add a key list in Settings, under Item pictures and keys, and try again.`;
+}
+
 /* ---------- merged arenas ----------
  * `changes` is what OpenW has changed in the game folder: game file (lower case) -> op.
  * Merges and snow are copies, so they can be followed back to the file that is really loaded. */
@@ -306,4 +342,4 @@ function snowPlan(arena, arenas, changes = new Map()) {
   return { how: 'version', op, play: [arena], snowy: snowy.name };
 }
 
-module.exports = { scanArenas, arenaName, partKind, mergePlan, mergeInfo, outsideParts, arenasUsing, everyMatchOps, sameEveryMatch, effectiveArena, mergedArenas, snowPlan };
+module.exports = { scanArenas, arenaName, partKind, mergePlan, mergeInfo, outsideParts, arenasUsing, everyMatchOps, sameEveryMatch, effectiveArena, mergedArenas, snowPlan, opReads, lockedFiles, lockedFor, lockedMessage };

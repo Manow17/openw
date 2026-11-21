@@ -131,6 +131,11 @@ main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-heigh
 .tile.note { flex-direction: row; align-items: center; padding: 14px 18px; color: var(--muted); font-size: 13px; }
 .tile.note > svg { color: var(--accent-text); }
 .tile.note.warn > svg { color: var(--bad); }
+/* a change that needs a key list: which file, and the way to Settings */
+.keyhint { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--tile-2); font-size: 13px; line-height: 1.4; }
+.keyhint > svg { flex: none; color: var(--bad); }
+.keyhint.soft > svg { color: var(--accent-text); }
+.keyhint .btn { flex: none; }
 .head { display: flex; align-items: center; gap: 10px; min-height: 22px; }
 .head h3 { flex: 1; }
 

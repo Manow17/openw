@@ -385,6 +385,60 @@ function makeEngine(cooked, running = { value: false }) {
     console.log(`        ${list.length} arenas, ${list.filter((a) => a.field).length} with a stadium part, ${list.filter((a) => arenas.snowPlan(a, list)).length} with a snow option`);
   }, !real);
 
+  test('a merge, snow or every match that needs a file OpenW cannot open says which arena and file, before anything is written', () => {
+    const part = (file) => ({ file, kind: arenas.partKind(file.replace(/\.upk$/, '')) });
+    const arena = (id, name, parts, locked = []) => ({ id, name, file: `${id}.upk`, standard: true, playable: true, parts: parts.map(part), field: parts.find((p) => /_Field\.upk$/.test(p)) || null, locked });
+    // Drift Woods (Night) without a key list: its main map is locked, so even its parts are unknown
+    const woods = arena('woods_night_p', 'Drift Woods (Night)', [], ['woods_night_p.upk']);
+    const waste = arena('wasteland_grs_p', 'Wasteland (Pitched)', ['Wasteland_GRS_Art_P.upk', 'Wasteland_GRS_VFX.upk', 'Wasteland_SFX.upk']);
+    const cs = arena('cs_p', 'Champions Field', ['CS_Field.upk', 'CS_OOB.upk', 'CS_OOB2.upk'], ['CS_OOB2.upk']);
+    const beach = arena('beach_p', 'Salty Shores', ['Beach_Field.upk', 'Beach_OOB.upk']);
+    const all = [woods, waste, cs, beach];
+    let plan = arenas.mergePlan(waste, woods, all);
+    assert.strictEqual(plan.how, 'build');
+    let locked = arenas.lockedFor(all, [waste, woods], plan.ops);
+    assert.deepStrictEqual(locked, [{ file: 'woods_night_p.upk', arena: 'Drift Woods (Night)' }]);
+    const msg = arenas.lockedMessage(locked);
+    assert.match(msg, /Drift Woods \(Night\)’s file woods_night_p\.upk/);
+    assert.match(msg, /key list in Settings/);
+    // a locked part only matters when the merge reads it
+    plan = arenas.mergePlan(beach, cs, all);
+    assert.deepStrictEqual(arenas.lockedFor(all, [beach, cs], plan.ops).map((l) => l.file), ['CS_OOB2.upk']);
+    assert.deepStrictEqual(arenas.lockedFor(all, [waste, beach], arenas.mergePlan(waste, beach, all).ops), []);
+    assert.strictEqual(arenas.lockedMessage([]), '');
+    // what an op reads: its source and the file it writes over (not a file it adds)
+    assert.deepStrictEqual(arenas.opReads({ kind: 'copy', gameFile: 'a.upk', sourceGameFile: 'b.upk' }), ['b.upk', 'a.upk']);
+    assert.deepStrictEqual(arenas.opReads({ kind: 'build', gameFile: 'BP1.upk', from: 'c.upk', create: true }), ['c.upk']);
+  });
+
+  test('without a key list, arenas the built-in key cannot open are marked locked, and the engine names the file', async () => {
+    const list = arenas.scanArenas(real, {}, []);
+    const locked = list.filter((a) => a.locked.length);
+    const open = list.filter((a) => !a.locked.length);
+    assert.ok(open.length > 40, `${open.length} arenas open with the built-in key`);
+    for (const a of locked) for (const f of a.locked) assert.ok(!upk.probeFile(path.join(real, f), []), `${f} is marked locked but opens`);
+    console.log(`        ${locked.length} arenas need a key list: ${locked.slice(0, 6).map((a) => a.name).join(', ')}${locked.length > 6 ? '…' : ''}`);
+    const lockedMain = locked.find((a) => a.locked.includes(a.file));
+    if (!lockedMain) return;
+    assert.deepStrictEqual(lockedMain.parts, [], 'a locked map cannot tell its parts');
+    // building from it: refused with the file's name and the way out, and the game folder is untouched
+    const dir = fs.mkdtempSync(path.join(tmp, 'locked-'));
+    fs.copyFileSync(path.join(real, lockedMain.file), path.join(dir, lockedMain.file));
+    const { engine } = makeEngine(dir);
+    const before = sha(path.join(dir, lockedMain.file));
+    await assert.rejects(engine.apply({ kind: 'build', gameFile: 'BPtest.upk', create: true, from: lockedMain.file, side: 'surroundings' }),
+      (e) => e.code === 'NO_KEY' && e.message.includes(lockedMain.file) && /key list in Settings/.test(e.message));
+    // copying it over an arena that opens: refused the same way, and that arena stays as it was
+    const small = open.filter((a) => fs.existsSync(path.join(real, a.file))).sort((x, y) => x.size - y.size)[0];
+    fs.copyFileSync(path.join(real, small.file), path.join(dir, small.file));
+    const smallBefore = sha(path.join(dir, small.file));
+    await assert.rejects(engine.apply({ kind: 'copy', gameFile: small.file, sourceGameFile: lockedMain.file }),
+      (e) => e.code === 'NO_KEY' && e.message.includes(lockedMain.file));
+    assert.strictEqual(sha(path.join(dir, small.file)), smallBefore);
+    assert.strictEqual(sha(path.join(dir, lockedMain.file)), before);
+    assert.ok(!fs.existsSync(path.join(dir, 'BPtest.upk')));
+  }, !real);
+
   test('a swap is written with the key of the file it replaces', async () => {
     const keysFile = path.join(process.env.APPDATA || '', 'OpenW', 'keys.txt');
     if (!fs.existsSync(keysFile)) return; // needs a key list to find two items with different keys

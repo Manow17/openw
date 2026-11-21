@@ -578,6 +578,8 @@ views.maps = () => {
 // Map Merge works on the arenas that ship with the game (see main/core/arenas.js).
 let arenas = null, arenasError = null, arenasLoading = false;
 const lab = { donor: null, base: null, snow: null, every: null };
+// a key list added or removed: items and arenas are read again, merge plans asked again
+function keysChanged() { catalog = null; arenas = null; lab.planFor = null; lab.choicesFor = null; lab.choices = null; }
 const gb = (bytes) => `${(bytes / 1e9).toFixed(1)} GB`;
 // The arenas that show a changed file: the arena itself, or every arena that loads that part.
 const shownIn = (gameFile) => arenas.filter((a) => a.file.toLowerCase() === gameFile.toLowerCase() || a.parts.some((p) => p.file.toLowerCase() === gameFile.toLowerCase()));
@@ -619,7 +621,8 @@ views.lab = () => {
   if (!choices.every.some((c) => c.id === lab.every)) lab.every = ((choices.every.find((c) => c.id === 'stadium_p') || choices.every[0]) || {}).id;
   const donor = byId(lab.donor), base = byId(lab.base);
   const snow = choices.snow.find((c) => c.id === lab.snow), every = choices.every.find((c) => c.id === lab.every);
-  const options = (list) => list.map((a) => [a.id, a.name]);
+  // arenas whose files OpenW cannot open without a key list say so in the lists
+  const options = (list) => list.map((a) => [a.id, a.locked && a.locked.length ? `${a.name} · needs a key list` : a.name]);
   const choose = (key) => (id) => { lab[key] = id; render(); };
 
   // "same arena every match": what is on now, and what it would cost on disk
@@ -637,12 +640,14 @@ views.lab = () => {
       h('p', { class: 'muted' }, 'Whatever arena a match is played in, you see the one you pick here: online, offline and in Free Play. Everyone else still sees the real arena. All standard arenas have the same pitch, so the ball, walls and goals line up.'),
       h('div', { class: 'row wrap' },
         select(choices.every.map((c) => [c.id, mergedTag(c)]), lab.every, choose('every'), 360),
-        h('button', { class: 'btn primary', 'data-progress': 'every', disabled: !every || (same && !everyQueued.length && !stale) || !!lab.busy,
-          onclick: () => busy('every', () => run(() => api('everyMatch', lab.every), (r) => (r.queued ? `Queued: ${every.label} goes in when Rocket League closes.` : `Every match now shows ${every.label}.`))) },
+        h('button', { class: 'btn primary', 'data-progress': 'every', disabled: !every || !!every.locked || (same && !everyQueued.length && !stale) || !!lab.busy,
+          onclick: () => busy('every', () => run(() => api('everyMatch', lab.every), (r) => `${r.queued ? `Queued: ${every.label} goes in when Rocket League closes.` : `Every match now shows ${every.label}.`}${r.skipped && r.skipped.length ? ` ${plural(r.skipped.length, 'arena')} keep their own look: OpenW cannot open them without a key list.` : ''}`)) },
         lab.busy === 'every' ? `Writing arenas…${writing}` : !current ? 'Use in every match' : same ? 'Update every match' : 'Switch to this arena'),
         current && h('button', { class: 'btn', onclick: () => run(() => api('everyMatchOff'), S.running ? 'Turning it off when the game closes.' : 'Your arenas are back to normal.') }, 'Turn off')),
       same && stale && h('p', { class: 'small' }, 'An arena changed since this was turned on (a merge was made or reverted), so some arenas are out of date. Update every match brings them in line.'),
       every && every.merged && h('p', { class: 'small' }, `Your merge comes along: every match shows ${every.label}. If you revert that merge later, pick it here again.`),
+      every && every.locked && keyHint(every.locked),
+      every && !every.locked && every.skipped && every.skipped.length > 0 && keyHint(`${every.skipped.join(', ')} ${every.skipped.length === 1 ? 'keeps its' : 'keep their'} own look: OpenW cannot open ${every.skipped.length === 1 ? 'it' : 'them'} with the one key it comes with. A key list in Settings, under Item pictures and keys, opens them.`, true),
       h('p', { class: 'muted small' }, current
         ? `Now: ${currentName} in every match (${everyOn.length} arenas replaced${everyQueued.length ? `, ${everyQueued.length} waiting for the game to close` : ''}).`
         : every ? `Replaces ${every.files} arena files. With the originals backed up, that takes about ${gb(every.bytes)} of disk space until you turn it off.` : ''),
@@ -653,7 +658,7 @@ views.lab = () => {
         h('b', {}, 'Stadium from'), select(options(split), lab.donor, choose('donor'), 300),
         h('b', {}, 'Placed in'), select(options(split), lab.base, choose('base'), 300)),
       donor && base && mergeHow(plan, donor, base),
-      h('button', { class: 'btn primary lg push', disabled: !plan || plan.how === 'none' || !!lab.busy,
+      h('button', { class: 'btn primary lg push', disabled: !plan || plan.how === 'none' || !!plan.lockedText || !!lab.busy,
         onclick: () => busy('merge', () => run(() => api('mergeArenas', lab.donor, lab.base), (r) => `${r.queued ? 'Queued.' : 'Merged.'} ${playHint(r.play.map((name) => ({ name })))}`)) },
       lab.busy === 'merge' ? 'Taking both arenas apart… (a few seconds)' : S.running ? 'Queue merge' : 'Merge')),
     tile('s5', head('Add snow', h('span', { class: 'tag' }, `${choices.snow.length} arenas`)),
@@ -661,8 +666,9 @@ views.lab = () => {
       select(choices.snow.map((c) => [c.id, mergedTag(c)]), lab.snow, choose('snow')),
       snow && h('p', { class: 'muted small' }, `Plays ${snow.snowy} in its place${snow.merged ? ', and keeps your merge' : ''}.`),
       snow && h('p', { class: 'small' }, h('b', {}, playHint(snow.play.map((name) => ({ name }))))),
+      snow && snow.locked && keyHint(snow.locked),
       choices.noSnow && choices.noSnow.length > 0 && h('p', { class: 'muted small' }, `${choices.noSnow.join(', ')}: no snow, because the snowy version would replace the files your merge changed. For snowy surroundings, merge a stadium into Forbidden Temple (Fire & Ice).`),
-      h('button', { class: 'btn primary lg push', disabled: !snow, onclick: () => run(() => api('snowArena', lab.snow), (r) => `${r.queued ? 'Queued.' : 'Snow added.'} ${playHint(snow.play.map((name) => ({ name })))}`) }, S.running ? 'Queue snow' : 'Add snow')));
+      h('button', { class: 'btn primary lg push', disabled: !snow || !!snow.locked, onclick: () => run(() => api('snowArena', lab.snow), (r) => `${r.queued ? 'Queued.' : 'Snow added.'} ${playHint(snow.play.map((name) => ({ name })))}`) }, S.running ? 'Queue snow' : 'Add snow')));
 
   // merges and snow, one row each (a merge of several files is one row); "every match" is the tile above
   const rows = new Map();
@@ -698,11 +704,17 @@ async function busy(what, fn) {
   try { return await fn(); } finally { lab.busy = null; render(); }
 }
 
+// A change that needs files OpenW cannot open without a key list: says which, and leads to Settings.
+// (soft: only some arenas are affected and the change can still be made)
+const keyHint = (text, soft) => h('div', { class: `keyhint${soft ? ' soft' : ''}` }, icon(soft ? 'info' : 'lock', 16),
+  h('span', { class: 'grow' }, text), h('button', { class: 'btn sm', onclick: go('settings') }, 'Open Settings'));
+
 // What a merge of the chosen pair will do, in words.
 function mergeHow(plan, donor, base) {
   if (donor.id === base.id) return h('p', { class: 'small' }, 'Pick two different arenas.');
   if (!plan) return h('p', { class: 'muted small' }, 'Working out how…');
   if (plan.how === 'none') return h('p', { class: 'small' }, plan.reason);
+  if (plan.lockedText) return keyHint(plan.lockedText);
   const files = plan.files > 1 ? ` (${plan.files} files)` : '';
   const how = {
     stadium: `Both arenas keep their stadium in a separate file, so ${donor.name}’s stadium is put straight into ${base.name}.`,
@@ -1230,8 +1242,8 @@ views.settings = () => {
     tile('s7', head('Item pictures and keys', h('span', { class: `tag${S.keys ? ' on' : ''}` }, S.keys ? `${S.keys.toLocaleString()} extra keys loaded` : 'Built-in key only')),
       h('p', { class: 'muted' }, 'Rocket League encrypts item packages with many different keys. OpenW includes one, which opens about two thirds of items. Items it cannot open show a lock and cannot be used as a new look. Add a key list (a keys.txt, one key per line) to open the rest.'),
       h('div', { class: 'row wrap push' },
-        h('button', { class: 'btn primary', onclick: () => run(async () => { const res = await api('importKeys'); catalog = null; arenas = null; return res; }, (r) => (r.keys ? `${r.keys.toLocaleString()} keys loaded. Pictures are being re-read.` : 'No change.')) }, S.keys ? 'Replace key list' : 'Add key list'),
-        S.keys ? h('button', { class: 'btn danger', onclick: () => run(async () => { const res = await api('removeKeys'); catalog = null; arenas = null; return res; }, 'Key list removed.') }, 'Remove') : null)),
+        h('button', { class: 'btn primary', onclick: () => run(async () => { const res = await api('importKeys'); keysChanged(); return res; }, (r) => (r.keys ? `${r.keys.toLocaleString()} keys loaded. Pictures are being re-read.` : 'No change.')) }, S.keys ? 'Replace key list' : 'Add key list'),
+        S.keys ? h('button', { class: 'btn danger', onclick: () => run(async () => { const res = await api('removeKeys'); keysChanged(); return res; }, 'Key list removed.') }, 'Remove') : null)),
     updatesTile(),
     tile('s5', head('Data'), h('p', { class: 'muted' }, 'Backups, maps and settings live in the data folder.'),
       h('div', { class: 'row wrap push' },
