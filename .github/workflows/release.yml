@@ -39,6 +39,11 @@ jobs:
       - name: Install
         run: npm ci
 
+      # the setup is built from node_modules/electron/dist (package.json, build.electronDist);
+      # make sure Electron's own program is there, not only its npm package
+      - name: Fetch Electron
+        run: node node_modules/electron/install.js
+
       - name: Test
         run: npm test
 
