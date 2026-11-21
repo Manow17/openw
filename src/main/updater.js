@@ -131,13 +131,33 @@ class Updater extends EventEmitter {
     this.set({ status: 'ready', progress: 1 });
   }
 
-  // Runs the downloaded setup silently; it closes OpenW, installs and starts the new version.
-  install() {
-    if (this.state.status !== 'ready' || !this.file) return false;
-    spawn(this.file, ['/S', '--force-run'], { detached: true, stdio: 'ignore' }).unref();
-    this.set({ status: 'installing' });
-    return true;
+  /**
+   * Runs the downloaded setup silently: it installs over OpenW and starts the new version.
+   * The setup installs for all users, so Windows only runs it with administrator rights, and a
+   * program like that has to be started through the shell ("run as administrator"), which shows
+   * Windows' permission prompt; started directly it simply fails. Resolves true once the setup
+   * runs (OpenW should then close), false when it could not start or permission was refused.
+   * wait: false starts it and returns at once (OpenW is closing anyway).
+   */
+  install({ wait = true } = {}) {
+    if (this.state.status !== 'ready' || !this.file) return Promise.resolve(false);
+    const run = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', setupCommand(this.file)],
+      wait ? { windowsHide: true } : { windowsHide: true, detached: true, stdio: 'ignore' });
+    if (!wait) { run.on('error', () => {}); run.unref(); return Promise.resolve(true); }
+    return new Promise((resolve) => {
+      run.on('error', (e) => { this.set({ error: 'The update could not be started: ' + e.message }); resolve(false); });
+      run.on('exit', (code) => {
+        if (code === 0) { this.set({ status: 'installing', error: null }); resolve(true); }
+        else { this.set({ error: 'The update needs Windows\' permission to install. Click Install again and choose Yes.' }); resolve(false); }
+      });
+    });
   }
 }
 
-module.exports = { Updater, compare, pickRelease, checksum, REPO };
+// The PowerShell command that starts the setup as administrator, silently, and lets it start
+// OpenW again afterwards (--force-run) and close a running OpenW on its own (--updated).
+function setupCommand(file) {
+  return "Start-Process -FilePath '" + String(file).replace(/'/g, "''") + "' -ArgumentList '/S','--updated','--force-run' -Verb RunAs -ErrorAction Stop";
+}
+
+module.exports = { Updater, compare, pickRelease, checksum, setupCommand, REPO };

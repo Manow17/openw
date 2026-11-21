@@ -325,8 +325,9 @@ const api = {
 
   // updates from GitHub Releases (updater.js)
   async updateCheck() { await updater.check({ download: true }); return snapshot(); },
-  updateInstall() {
-    if (updater.install()) setTimeout(() => { installOnQuit = false; app.quit(); }, 400);
+  async updateInstall() {
+    // OpenW closes only once the setup really runs; refused permission leaves it open, saying so
+    if (await updater.install()) setTimeout(() => { installOnQuit = false; app.quit(); }, 300);
     return snapshot();
   },
 
@@ -795,7 +796,7 @@ let installOnQuit = true;
 app.on('window-all-closed', () => app.quit());
 app.on('will-quit', () => {
   // a downloaded update goes in when OpenW closes (the setup starts OpenW again afterwards)
-  if (installOnQuit && updater && settings && settings.get('updates').auto && updater.state.status === 'ready') updater.install();
+  if (installOnQuit && updater && settings && settings.get('updates').auto && updater.state.status === 'ready') updater.install({ wait: false });
   if (mediaWatcher) mediaWatcher.stop();
   input.stop();
   // the real controller must not stay hidden once OpenW is gone

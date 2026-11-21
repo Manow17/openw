@@ -244,7 +244,7 @@ function render(animate) {
   top.replaceChildren(...[
     h('div', { class: 'pagetitle grow' }, h('h1', {}, name), sub && h('span', { class: 'muted clip' }, sub)),
     ready && S.running && h('span', { class: 'pill' }, h('span', { class: 'dot live' }), 'Game running · changes are queued'),
-    S.update && S.update.status === 'ready' && h('button', { class: 'btn sm primary', title: 'Closes OpenW, installs the new version and starts it again', onclick: () => run(() => api('updateInstall'), 'Installing the update…') }, `Update to v${S.update.version}`),
+    S.update && S.update.status === 'ready' && h('button', { class: 'btn sm primary', title: 'Closes OpenW, installs the new version and starts it again', onclick: () => run(() => api('updateInstall'), (r) => (r.update && r.update.status === 'installing' ? 'Installing the update. OpenW starts again when it is done.' : (r.update && r.update.error) || 'The update did not start.')) }, `Update to v${S.update.version}`),
     h('button', { class: 'iconbtn', 'aria-label': dark ? 'Switch to light mode' : 'Switch to dark mode', onclick: () => setTheme(themeMode() === 'dark' ? 'light' : 'dark') }, icon(dark ? 'sun' : 'moon', 18)),
     ready && btnIcon('primary', 'play', 'Play', () => run(() => api('launchGame'), 'Starting Rocket League…'), { disabled: S.running }),
   ].filter(Boolean));
@@ -1190,13 +1190,15 @@ function updatesTile() {
     installing: 'Installing…',
     error: `Could not update: ${u.error}`,
   }[u.status] || '';
+  const note = u.status !== 'error' && u.error ? u.error : '';
   return tile('s7', head('Updates', h('span', { class: `tag${u.status === 'ready' ? ' on' : ''}` }, `v${S.version}`)),
     h('p', { class: 'muted' }, 'New versions come from OpenW’s releases on GitHub. Each download is checked against the SHA-256 its release gives before it is installed; Windows asks for permission once while it installs.'),
     h('div', { class: 'opt-row' }, h('div', { class: 'grow' }, h('b', {}, 'Update automatically'), h('div', { class: 'muted small' }, status)),
       toggle(auto, (v) => set('updates', { ...(S.settings.updates || {}), auto: v }))),
+    note && h('p', { class: 'small', style: 'color:var(--warn, #e0a030)' }, note),
     h('div', { class: 'row wrap push' },
       u.status === 'ready'
-        ? h('button', { class: 'btn primary', onclick: () => run(() => api('updateInstall'), 'Installing the update…') }, `Install v${u.version} now`)
+        ? h('button', { class: 'btn primary', onclick: () => run(() => api('updateInstall'), (r) => (r.update && r.update.status === 'installing' ? 'Installing the update. OpenW starts again when it is done.' : (r.update && r.update.error) || 'The update did not start.')) }, `Install v${u.version} now`)
         : h('button', { class: 'btn', disabled: ['checking', 'downloading', 'installing'].includes(u.status), onclick: () => run(() => api('updateCheck'), (r) => (r.update && r.update.status === 'current' ? 'You have the newest version.' : r.update && r.update.status === 'error' ? r.update.error : 'Update found.')) }, 'Check now')));
 }
 

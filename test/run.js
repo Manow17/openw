@@ -73,6 +73,9 @@ function makeEngine(cooked, running = { value: false }) {
     assert.deepStrictEqual([pick.version, pick.file, pick.sha256], ['0.4.1', 'OpenW-Setup-0.4.1.exe', sha]);
     assert.strictEqual(pickRelease(list, '0.4.1'), null, 'nothing newer: no draft, no release without a setup');
     assert.strictEqual(checksum({ digest: 'sha256:' + 'B'.repeat(64) }, ''), 'b'.repeat(64), 'GitHub\'s own digest comes first');
+    // the setup needs administrator rights: it is started through the shell, with Windows' prompt, silently, and starts OpenW again
+    const { setupCommand } = require('../src/main/updater');
+    assert.strictEqual(setupCommand("C:\\Users\\O'Neil\\OpenW-Setup-0.4.6.exe"), "Start-Process -FilePath 'C:\\Users\\O''Neil\\OpenW-Setup-0.4.6.exe' -ArgumentList '/S','--updated','--force-run' -Verb RunAs -ErrorAction Stop");
     const { nextVersion } = require('../scripts/release-version');
     assert.strictEqual(nextVersion('0.4.1', ['v0.4.0']), '0.4.1');
     assert.strictEqual(nextVersion('0.4.1', ['v0.4.0', 'v0.4.1']), '0.4.2');
