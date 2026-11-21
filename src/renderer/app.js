@@ -746,6 +746,11 @@ function canvasEl(w, ht) {
 }
 const cssVar = (el, name) => getComputedStyle(el).getPropertyValue(name).trim();
 
+// Settings and readings are kept in Steam's units (a stick from the centre to the edge, or a
+// trigger's full pull, is 0 to 32767) and shown as a share of that, 0 to 100 %.
+const pct = (u) => Math.round((u / TX.M) * 1000) / 10;
+const fromPct = (p) => Math.round((p / 100) * TX.M);
+
 // The stick's square: dead zone, where the output can reach, your stick and what the game gets.
 // raw and the maths are in Steam's units (-32768..32767).
 function drawStick(el, c, raw) {
@@ -816,6 +821,13 @@ views.controller = () => {
     return h('div', { class: 'opt-row' }, lbl(title, sub),
       slider(min, max, obj[key], (v) => { obj[key] = v; save(); }, (v) => { obj[key] = v; val.textContent = fmt(v); preview(); }, step), val);
   };
+  // a value in Steam's units, shown and set as % of the stick's travel or the trigger's pull
+  const pctRow = (title, sub, obj, key, min, max) => {
+    const units = (v) => Math.max(min, Math.min(max, fromPct(v)));
+    const val = h('span', { class: 'val' }, `${pct(obj[key])}%`);
+    return h('div', { class: 'opt-row' }, lbl(title, sub),
+      slider(pct(min), pct(max), pct(obj[key]), (v) => { obj[key] = units(v); save(); }, (v) => { obj[key] = units(v); val.textContent = `${pct(obj[key])}%`; preview(); }, 0.1), val);
+  };
   const choiceRow = (title, sub, control) => h('div', { class: 'opt-row' }, lbl(title, sub, true), control);
   const flip = (obj, key) => toggle(obj[key], (v) => { obj[key] = v; save(); preview(); });
 
@@ -864,7 +876,7 @@ views.controller = () => {
       drawStick(map, c, raw);
       // the output along the horizontal axis
       drawCurve(curve, (x) => TX.stick(x * U, 0, c)[0] / U, raw ? Math.hypot(raw[0], raw[1]) / U : null);
-      if (raw) { const [ox, oy] = TX.stick(raw[0], raw[1], c); read.textContent = `stick ${Math.round(raw[0])}, ${Math.round(raw[1])}  →  game ${ox}, ${oy}`; } else read.textContent = ' ';
+      if (raw) { const [ox, oy] = TX.stick(raw[0], raw[1], c); read.textContent = `stick ${pct(raw[0])}%, ${pct(raw[1])}%  →  game ${pct(ox)}%, ${pct(oy)}%`; } else read.textContent = ' ';
     });
     // with OpenW Input off, drag in the square to see what the settings do
     const drag = (e) => {
@@ -882,15 +894,15 @@ views.controller = () => {
       tile('s5 ctl', head(`${sec === 'left' ? 'Left' : 'Right'} stick`, tag('Drag to try')), map,
         h('div', { class: 'legend' }, h('span', {}, h('i', { class: 'dot muted' }), 'Your stick'), h('span', {}, h('i', { class: 'dot accent' }), 'What the game gets'), h('span', {}, h('i', { class: 'dot dead' }), 'Dead zone')),
         curve, read,
-        h('p', { class: 'muted small' }, 'The same maths as Steam Input, measured from the Steam client: the same settings give the same output, to within 5 of 32767. In Rocket League, turn the game’s own Controller Deadzone down, since this handles it.')),
+        h('p', { class: 'muted small' }, 'The same maths as Steam Input, measured from the Steam client: the same settings give the same output, to within 0.02%. In Rocket League, turn the game’s own Controller Deadzone down, since this handles it.')),
       tile('s7 ctl', head('Joystick', h('button', { class: 'btn sm', onclick: () => { p.sticks[sec] = TX.blank('').sticks[sec]; redo(); } }, 'Steam defaults')),
         h('div', { class: 'sub' }, 'Deadzone'),
         choiceRow('Deadzone source', SOURCE_TEXT[s.source], seg([['none', 'None'], ['calibration', 'Calibration'], ['custom', 'Custom']], s.source, (v) => { s.source = v; redo(); })),
-        dz && valRow('Deadzone inner', 'Travel from the centre that does nothing.', s, 'inner', 0, 32000),
-        dz && valRow('Deadzone outer', 'How far from the centre counts as full.', s, 'outer', 0, 32000),
+        dz && pctRow('Deadzone inner', 'Travel from the centre that does nothing.', s, 'inner', 0, 32000),
+        dz && pctRow('Deadzone outer', 'How far from the centre counts as full.', s, 'outer', 0, 32000),
         dz && choiceRow('Deadzone shape', SHAPE_TEXT[s.shape], seg([['cross', 'Cross'], ['circle', 'Circle'], ['square', 'Square']], s.shape, (v) => { s.shape = v; redo(); })),
-        dz && valRow('Anti-deadzone', 'Adds to the smallest output, to get past a game’s own dead zone.', s, 'anti', 0, 32767),
-        dz && valRow('Anti-deadzone buffer', 'Re-establishes a dead zone after the anti-deadzone.', s, 'antiBuffer', 0, 32767),
+        dz && pctRow('Anti-deadzone', 'Adds to the smallest output, to get past a game’s own dead zone.', s, 'anti', 0, 32767),
+        dz && pctRow('Anti-deadzone buffer', 'Re-establishes a dead zone after the anti-deadzone.', s, 'antiBuffer', 0, 32767),
         h('div', { class: 'sub' }, 'Sensitivity'),
         choiceRow('Stick response curve', s.curve === 'linear' ? 'Maps the input to the output 1:1.' : 'Relaxed and wider curves give finer small movements; Aggressive reaches full sooner.', select(CURVE_OPTS, s.curve, (v) => { s.curve = v; redo(); }, 160)),
         s.curve === 'custom' && valRow('Custom response curve', 'Lower is more relaxed, higher more aggressive (Relaxed is 100).', s, 'customCurve', 25, 375),
@@ -901,7 +913,7 @@ views.controller = () => {
         h('div', { class: 'sub' }, 'Output'),
         choiceRow('Output joystick', 'Which stick of the virtual controller it moves.', seg(SIDES, s.output, (v) => { s.output = v; redo(); })),
         choiceRow('Outer ring command', 'A button held while the stick is pushed past the radius.', select(OUT_OPTS, s.ring.to, (v) => { s.ring.to = v; redo(); }, 160)),
-        s.ring.to && valRow('Command radius', '', s.ring, 'radius', 1, 32767),
+        s.ring.to && pctRow('Command radius', '', s.ring, 'radius', 1, 32767),
         s.ring.to && choiceRow('Command invert', 'Held inside the radius instead.', flip(s.ring, 'invert')),
         h('div', { class: 'sub' }, 'OpenW extra'),
         valRow('Smoothing', 'Steadies a shaky stick but adds a little delay. Steam has no such setting; off is the same as Steam.', s, 'smoothing', 0, 100, (v) => (v ? `${v}%` : 'Off'))));
@@ -917,12 +929,12 @@ views.controller = () => {
       root.append(tile('s6 ctl', head(`${name} trigger`, tag()), curve,
         h('div', { class: 'opt-row' }, lbl('Your trigger'), h('div', { class: 'meter raw grow' }, rawBar)),
         h('div', { class: 'opt-row' }, lbl('Game gets'), h('div', { class: 'meter grow' }, outBar)),
-        valRow('Trigger range start', 'Pull before anything happens.', t, 'start', 0, 32767),
-        valRow('Trigger range end', 'Pull that already counts as full.', t, 'end', 0, 32767),
+        pctRow('Trigger range start', 'Pull before anything happens.', t, 'start', 0, 32767),
+        pctRow('Trigger range end', 'Pull that already counts as full.', t, 'end', 0, 32767),
         choiceRow('Response curve', '', select(TRIGGER_CURVES, t.curve, (v) => { t.curve = v; redo(); }, 150)),
         choiceRow('Output trigger', '', seg(SIDES, t.output, (v) => { t.output = v; redo(); })),
         choiceRow('Hair trigger', 'OpenW extra: full the moment it moves down, off the moment it moves back up.', flip(t, 'hair')),
-        h('p', { class: 'muted small' }, 'Steam’s range and defaults (1000 to 32000). Steam’s live preview does not cover triggers, so unlike the sticks this was not measured.')));
+        h('p', { class: 'muted small' }, 'Steam’s range and defaults (3% to 97.7% of the pull). Steam’s live preview does not cover triggers, so unlike the sticks this was not measured.')));
     }
   } else if (sec === 'buttons') {
     const lights = [];
