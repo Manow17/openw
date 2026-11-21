@@ -123,6 +123,15 @@ function parseKeys(text) {
   return [...keys];
 }
 
+// A key list file: plain text, or gzipped (the list OpenW is built with, keys/keys.txt.gz).
+// [] when it is missing or holds no keys.
+function readKeyFile(file) {
+  let buf;
+  try { buf = fs.readFileSync(file); } catch { return []; }
+  if (buf[0] === 0x1f && buf[1] === 0x8b) { try { buf = zlib.gunzipSync(buf); } catch { return []; } }
+  return parseKeys(buf.toString('utf8'));
+}
+
 function readPackage(buf, extraKeys = []) {
   const summary = parseSummary(buf);
   const range = headerRange(summary, buf.length);
@@ -346,5 +355,5 @@ function baseName(fileName) {
 
 module.exports = {
   UpkError, DEFAULT_KEYS, parseSummary, readPackage, readPackageFile, renameNames, renameIn, headerTables, editHeader, baseName,
-  probeFile, parseKeys, readHeaderFile, readNamesFile, keyOfFile, reencrypt, readTables, inflateChunk, readObject, aes,
+  probeFile, parseKeys, readKeyFile, readHeaderFile, readNamesFile, keyOfFile, reencrypt, readTables, inflateChunk, readObject, aes,
 };

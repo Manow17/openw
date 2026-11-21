@@ -36,7 +36,8 @@
       "assets/**/*",
       "!assets/icon-source.webp",
       "bin/**/*",
-      "drivers/**/*"
+      "drivers/**/*",
+      "keys/**/*"
     ],
     "win": {
       "target": [

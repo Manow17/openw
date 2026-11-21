@@ -56,6 +56,19 @@ jobs:
           "version=$v" >> $env:GITHUB_OUTPUT
           Write-Host "Releasing OpenW $v"
 
+      # the key list OpenW comes with: the OPENW_KEYS secret (gzip, then base64) becomes
+      # keys/keys.txt.gz in the app. It is never in the repo (keys/ is in .gitignore).
+      - name: Add the key list
+        shell: pwsh
+        env:
+          OPENW_KEYS: ${{ secrets.OPENW_KEYS }}
+        run: |
+          if ($env:OPENW_KEYS) {
+            New-Item -ItemType Directory -Force keys | Out-Null
+            [IO.File]::WriteAllBytes("keys/keys.txt.gz", [Convert]::FromBase64String($env:OPENW_KEYS))
+            node -e "const n = require('./src/main/core/upk').readKeyFile('keys/keys.txt.gz').length; if (!n) { console.error('OPENW_KEYS holds no keys'); process.exit(1); } console.log(n + ' keys added')"
+          } else { Write-Host "No OPENW_KEYS secret: this build has the built-in key only" }
+
       - name: Build the setup
         run: npx electron-builder --win nsis --x64 --publish never
 

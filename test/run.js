@@ -786,6 +786,26 @@ function makeEngine(cooked, running = { value: false }) {
     assert.deepStrictEqual(keys, [hex, Buffer.alloc(32, 7).toString('hex')]);
   });
 
+  test('the key list OpenW is built with: read gzipped or plain, packed into the app, never committed', () => {
+    const zlib = require('zlib');
+    const k1 = 'a'.repeat(64), k2 = Buffer.alloc(32, 7).toString('base64');
+    const text = `${k1}\r\n${k2}\r\n${upk.DEFAULT_KEYS[0]}\r\njunk\r\n`;
+    fs.writeFileSync(path.join(tmp, 'k.txt.gz'), zlib.gzipSync(text));
+    fs.writeFileSync(path.join(tmp, 'k.txt'), text);
+    assert.deepStrictEqual(upk.readKeyFile(path.join(tmp, 'k.txt.gz')), [k1, Buffer.alloc(32, 7).toString('hex')]);
+    assert.deepStrictEqual(upk.readKeyFile(path.join(tmp, 'k.txt')), upk.readKeyFile(path.join(tmp, 'k.txt.gz')));
+    assert.deepStrictEqual(upk.readKeyFile(path.join(tmp, 'missing.gz')), []);
+    const root = path.join(__dirname, '..');
+    // keys/ is never committed, but the setup carries it
+    const { execFileSync } = require('child_process');
+    assert.match(execFileSync('git', ['check-ignore', 'keys/keys.txt.gz'], { cwd: root, encoding: 'utf8' }), /keys\/keys\.txt\.gz/);
+    assert.strictEqual(execFileSync('git', ['ls-files', 'keys'], { cwd: root, encoding: 'utf8' }).trim(), '', 'no key list in the repo');
+    assert.ok(require('../package.json').build.files.includes('keys/**/*'));
+    const wf = fs.readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8');
+    assert.ok(wf.indexOf('secrets.OPENW_KEYS') > 0 && wf.indexOf('keys/keys.txt.gz') < wf.indexOf('electron-builder --win'), 'the release build adds the key list before building');
+    assert.match(fs.readFileSync(path.join(root, 'src', 'main', 'main.js'), 'utf8'), /'keys', 'keys\.txt\.gz'/);
+  });
+
   test('wrong extra keys do not stop a readable package from opening', () => {
     const wrong = ['11'.repeat(32), '22'.repeat(32)];
     const pkg = upk.readPackageFile(path.join(cooked, shortF), wrong);

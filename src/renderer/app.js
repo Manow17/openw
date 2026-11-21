@@ -1268,11 +1268,13 @@ views.settings = () => {
         h('button', { class: 'btn sm', onclick: () => run(() => api('browseInstall', S.install.platform)) }, 'Change')),
       h('div', { class: 'opt-row push' }, h('div', { class: 'grow' }, h('b', {}, 'Launcher'), h('div', { class: 'muted small' }, 'Used by the Play button.')),
         select([['epic', 'Epic Games'], ['steam', 'Steam']], S.install.platform, (v) => set('platform', v)))),
-    tile('s7', head('Item pictures and keys', h('span', { class: `tag${S.keys ? ' on' : ''}` }, S.keys ? `${S.keys.toLocaleString()} extra keys loaded` : 'Built-in key only')),
-      h('p', { class: 'muted' }, 'Rocket League encrypts item packages with many different keys. OpenW includes one, which opens about two thirds of items. Items it cannot open show a lock and cannot be used as a new look. Add a key list (a keys.txt, one key per line) to open the rest.'),
+    tile('s7', head('Item pictures and keys', h('span', { class: `tag${S.keys ? ' on' : ''}` }, S.keys ? `${(S.keys + 1).toLocaleString()} keys` : 'Built-in key only')),
+      h('p', { class: 'muted' }, S.bundledKeys
+        ? 'Rocket League encrypts item and arena files with many different keys. OpenW comes with them, so items and arenas open without you doing anything. If a brand-new item still shows a lock after a game update, add a newer key list (a keys.txt, one key per line) here.'
+        : 'Rocket League encrypts item packages with many different keys. OpenW includes one, which opens about two thirds of items. Items it cannot open show a lock and cannot be used as a new look. Add a key list (a keys.txt, one key per line) to open the rest.'),
       h('div', { class: 'row wrap push' },
-        h('button', { class: 'btn primary', onclick: () => run(async () => { const res = await api('importKeys'); keysChanged(); return res; }, (r) => (r.keys ? `${r.keys.toLocaleString()} keys loaded. Pictures are being re-read.` : 'No change.')) }, S.keys ? 'Replace key list' : 'Add key list'),
-        S.keys ? h('button', { class: 'btn danger', onclick: () => run(async () => { const res = await api('removeKeys'); keysChanged(); return res; }, 'Key list removed.') }, 'Remove') : null)),
+        h('button', { class: 'btn primary', onclick: () => run(async () => { const res = await api('importKeys'); keysChanged(); return res; }, (r) => (r.keys ? `${r.keys.toLocaleString()} keys loaded. Pictures are being re-read.` : 'No change.')) }, S.userKeys ? 'Replace key list' : S.bundledKeys ? 'Add a newer key list' : 'Add key list'),
+        S.userKeys ? h('button', { class: 'btn danger', onclick: () => run(async () => { const res = await api('removeKeys'); keysChanged(); return res; }, 'Key list removed.') }, 'Remove') : null)),
     updatesTile(),
     tile('s5', head('Data'), h('p', { class: 'muted' }, 'Backups, maps and settings live in the data folder.'),
       h('div', { class: 'row wrap push' },

@@ -130,12 +130,16 @@ function thumbnail(file) {
   return jpg.length ? jpg : null;
 }
 
-// Extra decryption keys the user has added (keys.txt in the data folder). OpenW
-// ships only the long-published default key; newer items need a key list.
-let extraKeys = [];
+// Decryption keys besides the long-published default one: the key list OpenW is built with
+// (keys/keys.txt.gz, added by the release build from a secret, never in the repo) and the one the
+// user has added (keys.txt in the data folder), for items newer than the built-in list.
+let extraKeys = [], bundledKeys = 0;
 const keysFile = () => path.join(app.getPath('userData'), 'keys.txt');
+const BUNDLED_KEYS = path.join(__dirname, '..', '..', 'keys', 'keys.txt.gz');
 function loadKeys() {
-  try { extraKeys = upk.parseKeys(fs.readFileSync(keysFile(), 'utf8')); } catch { extraKeys = []; }
+  const bundled = upk.readKeyFile(BUNDLED_KEYS);
+  bundledKeys = bundled.length;
+  extraKeys = [...new Set([...bundled, ...upk.readKeyFile(keysFile())])];
 }
 // Forget "no readable picture" answers, so they are tried again with the current keys.
 function retryMissingThumbs() {
@@ -326,6 +330,8 @@ function snapshot() {
     engine: engine.list(),
     mapSlot: MAP_SLOT,
     keys: extraKeys.length,
+    bundledKeys,
+    userKeys: fs.existsSync(keysFile()), // a key list the user added
     overlayMove: overlayEdit,
   };
 }
