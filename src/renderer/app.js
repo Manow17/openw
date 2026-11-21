@@ -627,32 +627,35 @@ views.lab = () => {
   const options = (list) => list.map((a) => [a.id, a.locked && a.locked.length ? `${a.name} · needs a key list` : a.name]);
   const choose = (key) => (id) => { lab[key] = id; render(); };
 
-  // "same arena every match": what is on now, and what it would cost on disk
+  // "same stadium every match": what is on now, and what it would cost on disk
   const everyOn = S.engine.active.filter((r) => r.op.group === 'everymatch');
-  const everyQueued = S.engine.queue.filter((q) => q.op && q.op.group === 'everymatch');
+  const everyQueued = S.engine.queue.filter((q) => q.op && q.op.group === 'everymatch' && q.type === 'apply');
   const current = (everyOn[0] || everyQueued[0] || {}).op;
   const currentId = current && (current.chosen || (arenas.find((a) => a.file === current.sourceGameFile) || {}).id);
-  const currentName = current && (current.label.replace(/ in place of .*$/, ''));
+  const currentName = current && (current.every || current.label.replace(/ in place of .*$/, ''));
+  const everyPlaces = new Set([...everyOn, ...everyQueued].map((r) => r.op.place).filter(Boolean)).size;
+  const keySkipped = every && every.skipped ? every.skipped.filter((n) => !(every.single || []).includes(n)) : [];
   // the chosen arena is already on; out of date when a merge was made or reverted since
   const same = !!current && currentId === lab.every, stale = !!choices.everyStale;
-  const writing = lab.progress && lab.progress.what === 'every' ? ` ${lab.progress.done} of ${lab.progress.total}` : '';
+  const writing = lab.progress && lab.progress.what === 'every' ? ` ${Math.round((lab.progress.done / lab.progress.total) * 100)}%` : '';
 
   root.append(
-    tile('s12 ink', head('Same arena every match', current && h('span', { class: 'tag on' }, everyQueued.length ? 'Queued' : 'On')),
-      h('p', { class: 'muted' }, 'Whatever arena a match is played in, you see the one you pick here: online, offline and in Free Play. Everyone else still sees the real arena. All standard arenas have the same pitch, so the ball, walls and goals line up.'),
+    tile('s12 ink', head('Same stadium every match', current && h('span', { class: 'tag on' }, everyQueued.length ? 'Queued' : 'On')),
+      h('p', { class: 'muted' }, 'Whatever arena a match is played in, you see the stadium you pick here (pitch, walls, stands and crowd), in that arena’s own surroundings and sky. Each arena keeps its own file, so online matches work. Everyone else still sees the real arena.'),
       h('div', { class: 'row wrap' },
         select(choices.every.map((c) => [c.id, mergedTag(c)]), lab.every, choose('every'), 360),
         h('button', { class: 'btn primary', 'data-progress': 'every', disabled: !every || !!every.locked || (same && !everyQueued.length && !stale) || !!lab.busy,
-          onclick: () => busy('every', () => run(() => api('everyMatch', lab.every), (r) => `${r.queued ? `Queued: ${every.label} goes in when Rocket League closes.` : `Every match now shows ${every.label}.`}${r.skipped && r.skipped.length ? ` ${plural(r.skipped.length, 'arena')} keep their own look: OpenW cannot open them without a key list.` : ''}`)) },
-        lab.busy === 'every' ? `Writing arenas…${writing}` : !current ? 'Use in every match' : same ? 'Update every match' : 'Switch to this arena'),
+          onclick: () => busy('every', () => run(() => api('everyMatch', lab.every), (r) => (r.queued ? `Queued: ${every.stadium}’s stadium goes into ${plural(r.arenas, 'arena')} when Rocket League closes.` : `Every match now shows ${every.stadium}’s stadium (${plural(r.arenas, 'arena')}).`))) },
+        lab.busy === 'every' ? `Working…${writing}` : !current ? 'Use in every match' : same ? 'Update every match' : 'Switch to this stadium'),
         current && h('button', { class: 'btn', onclick: () => run(() => api('everyMatchOff'), S.running ? 'Turning it off when the game closes.' : 'Your arenas are back to normal.') }, 'Turn off')),
       same && stale && h('p', { class: 'small' }, 'An arena changed since this was turned on (a merge was made or reverted), so some arenas are out of date. Update every match brings them in line.'),
-      every && every.merged && h('p', { class: 'small' }, `Your merge comes along: every match shows ${every.label}. If you revert that merge later, pick it here again.`),
+      every && h('p', { class: 'small' }, every.merged ? `Your merge: every match shows ${every.stadium}’s stadium, the stadium of ${every.label}.` : `Every match shows ${every.stadium}’s stadium.`),
       every && every.locked && keyHint(every.locked),
-      every && !every.locked && every.skipped && every.skipped.length > 0 && keyHint(`${every.skipped.join(', ')} ${every.skipped.length === 1 ? 'keeps its' : 'keep their'} own look: OpenW cannot open ${every.skipped.length === 1 ? 'it' : 'them'} with the one key it comes with. A key list in Settings, under Item pictures and keys, opens them.`, true),
+      every && !every.locked && keySkipped.length > 0 && keyHint(`${keySkipped.join(', ')} ${keySkipped.length === 1 ? 'keeps its' : 'keep their'} own look: OpenW cannot open ${keySkipped.length === 1 ? 'it' : 'them'} with the keys it has. A newer key list in Settings, under Item pictures and keys, opens them.`, true),
+      every && every.single && every.single.length > 0 && h('p', { class: 'muted small' }, `${every.single.join(' and ')} ${every.single.length === 1 ? 'keeps its' : 'keep their'} own stadium: ${every.single.length === 1 ? 'it is' : 'they are'} a single file with nothing to load another stadium into, and replacing the file would disconnect online matches.`),
       h('p', { class: 'muted small' }, current
-        ? `Now: ${currentName} in every match (${everyOn.length} arenas replaced${everyQueued.length ? `, ${everyQueued.length} waiting for the game to close` : ''}).`
-        : every ? `Replaces ${every.files} arena files. With the originals backed up, that takes about ${gb(every.bytes)} of disk space until you turn it off.` : ''),
+        ? `Now: ${currentName} in every match (${plural(everyPlaces || everyOn.length, 'arena')}${everyQueued.length ? ', waiting for the game to close' : ''}).`
+        : every ? `Changes ${plural(every.files, 'arena')}. With the originals backed up, that takes about ${gb(every.bytes)} of disk space until you turn it off. Takes a minute or two.` : ''),
       h('p', { class: 'muted small' }, 'Arenas you merged or snowed yourself keep your change. Rocket Labs, Hoops, Dropshot, Snow Day, Knockout and the odd-shaped arenas (Badlands, Tokyo Underpass, ARCtagon) are left as they are.')),
     tile('s7', head('Merge two arenas', h('span', { class: 'tag' }, `${split.length} arenas`)),
       h('p', { class: 'muted' }, 'Puts the stadium of one arena (pitch, walls, goals and stands) in the surroundings of another. Any two soccar arenas can be picked; Hoops, Dropshot, Snow Day and odd-shaped arenas have a different pitch and are left out.'),
@@ -668,6 +671,7 @@ views.lab = () => {
       select(choices.snow.map((c) => [c.id, mergedTag(c)]), lab.snow, choose('snow')),
       snow && h('p', { class: 'muted small' }, `Plays ${snow.snowy} in its place${snow.merged ? ', and keeps your merge' : ''}.`),
       snow && h('p', { class: 'small' }, h('b', {}, playHint(snow.play.map((name) => ({ name }))))),
+      snow && h('p', { class: 'small', style: 'color:var(--warn, #e0a030)' }, `Offline only: the snowy version replaces ${snow.label}’s file, and Rocket League checks arena files online, so an online match in ${snow.label} would disconnect.`),
       snow && snow.locked && keyHint(snow.locked),
       choices.noSnow && choices.noSnow.length > 0 && h('p', { class: 'muted small' }, `${choices.noSnow.join(', ')}: no snow, because the snowy version would replace the files your merge changed. For snowy surroundings, merge a stadium into Forbidden Temple (Fire & Ice).`),
       h('button', { class: 'btn primary lg push', disabled: !snow || !!snow.locked, onclick: () => run(() => api('snowArena', lab.snow), (r) => `${r.queued ? 'Queued.' : 'Snow added.'} ${playHint(snow.play.map((name) => ({ name })))}`) }, S.running ? 'Queue snow' : 'Add snow')));
@@ -727,7 +731,8 @@ function mergeHow(plan, donor, base) {
   return h('div', {},
     h('p', { class: 'muted small' }, how),
     h('p', { class: 'small' }, h('b', {}, playHint(plan.play.map((name) => ({ name }))))),
-    plan.note && h('p', { class: 'muted small' }, plan.note));
+    plan.note && h('p', { class: 'muted small' }, plan.note),
+    plan.online === false && h('p', { class: 'small', style: 'color:var(--warn, #e0a030)' }, `Offline only: ${base.name} is a single file, so it gets ${donor.name}’s map in its place, and Rocket League checks arena files online. An online match in ${base.name} would disconnect.`));
 }
 
 /* ---------- controller ---------- */
@@ -1257,238 +1262,238 @@ views.profile = () => {
       h('p', {}, 'Rocket League takes your name and picture from your Epic Games or Steam account, and your rank and titles (with their colour) from its own servers. No file on your PC holds them, so OpenW cannot change them in the game. Your name, title, rank badge and picture here are for this card.')));
 };
 
-/* ---------- clips: a hotkey saves the last seconds of the game ---------- */
-
-// The recorder and the library live in the main process (main/clips.js); this page shows them.
-const clipsUI = { info: null, loading: false, picturing: new Set() };
-const LENGTH_OPTS = [10, 15, 20, 30, 45, 60, 90, 120, 180].map((s) => [s, s < 60 ? `${s} seconds` : s % 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s / 60} minute${s > 60 ? 's' : ''}`]);
-const fileUrl = (p) => `file:///${String(p).replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/^([A-Za-z])%3A/, '$1:')}`;
-const mmss = (s) => (s == null ? '' : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`);
-const mb = (bytes) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(0.1, bytes / 1e6).toFixed(1)} MB`);
-const clipCfg = () => S.settings.clips;
-const setClips = (patch) => set('clips', { ...clipCfg(), ...patch });
-
-function loadClips() {
-  if (clipsUI.loading) return;
-  clipsUI.loading = true;
-  api('clipsInfo').then((info) => { clipsUI.info = info; }, (e) => { clipsUI.info = { status: { state: 'error', message: reason(e) }, list: [] }; })
-    .finally(() => { clipsUI.loading = false; if (ui.tab === 'clips') render(); });
-}
-window.openw.on('clips', (p) => {
-  if (!clipsUI.info) return;
-  if (p.status) clipsUI.info.status = p.status;
-  if (p.tick) { const el = document.querySelector('[data-clipstate]'); if (el && ui.tab === 'clips') el.textContent = clipStateText(p.status); return; }
-  if (p.saved) toast(`Clip saved: ${p.saved}`);
-  if (!p.status || p.saved) loadClips(); else if (ui.tab === 'clips') render();
-});
-
-function clipStateText(st) {
-  const c = clipCfg(), keys = c.keys.map((k) => `${k.key} saves ${LENGTH_OPTS.find(([s]) => s === k.seconds)[1]}`).join(', ');
-  const longest = Math.max(10, ...c.keys.map((k) => k.seconds));
-  switch (st.state) {
-    case 'recording': {
-      const i = st.info || {};
-      return `Keeping the last ${longest} seconds ready · ${i.width}×${i.height}, ${i.fps} fps, ${i.codec}${i.audio ? ', with sound' : ', no sound'} · ${keys || 'no hotkey set'}`;
-    }
-    case 'waiting': return `On. It starts when Rocket League starts, then ${keys || 'set a hotkey below'}.`;
-    case 'starting': return 'Starting…';
-    case 'error': return st.message || 'Something went wrong.';
-    default: return c.on ? 'Starting…' : `Off. Turn it on, then in game ${keys || 'set a hotkey below'}.`;
-  }
-}
-
-views.clips = () => {
-  if (!clipsUI.info) { loadClips(); return bento(tile('s12', empty('clips', 'Reading your clips', 'One moment.'))); }
-  const { status: st, list } = clipsUI.info, c = clipCfg();
-  const recording = st.state === 'recording';
-  const longest = Math.max(10, ...c.keys.map((k) => k.seconds));
-  const root = bento();
-
-  // --- on / off and what it is doing ---
-  root.append(tile(`s12 bar${recording ? ' ink' : ''}`, art('Clips', 'clips'),
-    h('div', { class: 'grow' }, h('b', {}, 'Clipping'), h('div', { class: 'muted small', 'data-clipstate': '' }, clipStateText(st)),
-      st.state !== 'error' && st.message && h('div', { class: 'small', style: 'color:var(--warn, #e0a030)' }, st.message),
-      st.keyErrors && st.keyErrors.length > 0 && h('div', { class: 'small', style: 'color:var(--bad)' }, `${st.keyErrors.join(', ')} ${st.keyErrors.length > 1 ? 'are' : 'is'} taken by another app. Pick another key under Hotkeys.`)),
-    recording && h('button', { class: 'btn sm', onclick: () => run(() => api('clipSaveNow', c.keys[0] ? c.keys[0].seconds : 30)) }, 'Save a clip now'),
-    toggle(c.on, (v) => setClips({ on: v }))));
-
-  // --- the library ---
-  const grid = h('div', { class: 'clipgrid' }, list.map((clip) => clipCard(clip)));
-  root.append(tile('s12', head('Your clips', h('span', { class: 'tag' }, plural(list.length, 'clip')), h('button', { class: 'btn sm', onclick: () => api('clipOpenFolder') }, 'Open folder')),
-    list.length ? grid : h('p', { class: 'muted' }, `No clips yet. ${c.keys[0] ? `In game, press ${c.keys[0].key} and the last ${c.keys[0].seconds} seconds are saved here.` : ''}`)));
-  pictureMissing(list);
-
-  // --- hotkeys ---
-  const keys = c.keys;
-  const setKeys = (next) => setClips({ keys: next });
-  root.append(tile('s6 ctl', head('Hotkeys', keys.length < 6 && h('button', { class: 'btn sm', onclick: () => captureKey(null, (key) => setKeys([...keys, { key, seconds: 60 }])) }, 'Add a hotkey')),
-    h('p', { class: 'muted small' }, 'They work while you play. Give each its own length, for example a short one for a goal and a long one for a whole play. A key alone works for F1 to F12 and keys like Insert or Pause; anything else needs Ctrl, Alt or Shift.'),
-    keys.map((k, i) => h('div', { class: 'opt-row' },
-      h('button', { class: 'btn sm keycap', title: 'Click, then press the keys', onclick: (e) => captureKey(e.currentTarget, (key) => setKeys(keys.map((x, j) => (j === i ? { ...x, key } : x)))) }, k.key),
-      h('span', { class: 'muted small' }, 'saves the last'),
-      select(LENGTH_OPTS, k.seconds, (v) => setKeys(keys.map((x, j) => (j === i ? { ...x, seconds: v } : x))), 150),
-      h('span', { class: 'grow' }),
-      h('button', { class: 'btn sm danger', disabled: keys.length < 2, onclick: () => setKeys(keys.filter((_, j) => j !== i)) }, 'Remove'))),
-    h('p', { class: 'muted small' }, `It keeps the last ${longest} seconds (the longest hotkey) in memory: about ${mb(((c.mbps * 1e6) / 8) * (longest + 2))} while it runs.`)));
-
-  // --- quality ---
-  const rate = slider(2, 80, c.mbps, (v) => setClips({ mbps: v }), (v) => { rateVal.textContent = `${v} Mbps`; rateSub.textContent = sizeText(v); });
-  const rateVal = h('span', { class: 'val wide' }, `${c.mbps} Mbps`);
-  const sizeText = (v) => `About ${mb(((v * 1e6) / 8) * 60)} per minute of clip.`;
-  const rateSub = h('div', { class: 'muted small' }, sizeText(c.mbps));
-  root.append(tile('s6 ctl', head('Quality'),
-    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'What to record'), h('div', { class: 'muted small' }, c.source === 'game' ? 'Only the Rocket League window: the overlays are not in the clip.' : 'The whole main screen, with your overlays.')),
-      seg([['screen', 'Screen'], ['game', 'Game window']], c.source, (v) => setClips({ source: v }))),
-    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Resolution'), h('div', { class: 'muted small' }, 'Smaller is lighter on your PC while you play.')),
-      select([['native', 'Same as the screen'], ['1440', '1440p'], ['1080', '1080p'], ['720', '720p']], c.res, (v) => setClips({ res: v }), 170)),
-    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Frame rate')), seg([[30, '30 fps'], [60, '60 fps']], c.fps, (v) => setClips({ fps: v }))),
-    h('div', { class: 'opt-row' }, h('div', { class: 'lbl' }, h('b', {}, 'Bitrate'), rateSub), rate, typeable(rateVal, rate)),
-    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Video format'), h('div', { class: 'muted small' }, c.codec === 'av1' ? 'Smaller files at the same quality. Needs a recent graphics card to stay light; some apps cannot play it yet.' : 'MP4 that plays everywhere. Uses your graphics card when it can.')),
+/* ---------- clips: a hotkey saves the last seconds of the game ---------- */
+
+// The recorder and the library live in the main process (main/clips.js); this page shows them.
+const clipsUI = { info: null, loading: false, picturing: new Set() };
+const LENGTH_OPTS = [10, 15, 20, 30, 45, 60, 90, 120, 180].map((s) => [s, s < 60 ? `${s} seconds` : s % 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s / 60} minute${s > 60 ? 's' : ''}`]);
+const fileUrl = (p) => `file:///${String(p).replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/^([A-Za-z])%3A/, '$1:')}`;
+const mmss = (s) => (s == null ? '' : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`);
+const mb = (bytes) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(0.1, bytes / 1e6).toFixed(1)} MB`);
+const clipCfg = () => S.settings.clips;
+const setClips = (patch) => set('clips', { ...clipCfg(), ...patch });
+
+function loadClips() {
+  if (clipsUI.loading) return;
+  clipsUI.loading = true;
+  api('clipsInfo').then((info) => { clipsUI.info = info; }, (e) => { clipsUI.info = { status: { state: 'error', message: reason(e) }, list: [] }; })
+    .finally(() => { clipsUI.loading = false; if (ui.tab === 'clips') render(); });
+}
+window.openw.on('clips', (p) => {
+  if (!clipsUI.info) return;
+  if (p.status) clipsUI.info.status = p.status;
+  if (p.tick) { const el = document.querySelector('[data-clipstate]'); if (el && ui.tab === 'clips') el.textContent = clipStateText(p.status); return; }
+  if (p.saved) toast(`Clip saved: ${p.saved}`);
+  if (!p.status || p.saved) loadClips(); else if (ui.tab === 'clips') render();
+});
+
+function clipStateText(st) {
+  const c = clipCfg(), keys = c.keys.map((k) => `${k.key} saves ${LENGTH_OPTS.find(([s]) => s === k.seconds)[1]}`).join(', ');
+  const longest = Math.max(10, ...c.keys.map((k) => k.seconds));
+  switch (st.state) {
+    case 'recording': {
+      const i = st.info || {};
+      return `Keeping the last ${longest} seconds ready · ${i.width}×${i.height}, ${i.fps} fps, ${i.codec}${i.audio ? ', with sound' : ', no sound'} · ${keys || 'no hotkey set'}`;
+    }
+    case 'waiting': return `On. It starts when Rocket League starts, then ${keys || 'set a hotkey below'}.`;
+    case 'starting': return 'Starting…';
+    case 'error': return st.message || 'Something went wrong.';
+    default: return c.on ? 'Starting…' : `Off. Turn it on, then in game ${keys || 'set a hotkey below'}.`;
+  }
+}
+
+views.clips = () => {
+  if (!clipsUI.info) { loadClips(); return bento(tile('s12', empty('clips', 'Reading your clips', 'One moment.'))); }
+  const { status: st, list } = clipsUI.info, c = clipCfg();
+  const recording = st.state === 'recording';
+  const longest = Math.max(10, ...c.keys.map((k) => k.seconds));
+  const root = bento();
+
+  // --- on / off and what it is doing ---
+  root.append(tile(`s12 bar${recording ? ' ink' : ''}`, art('Clips', 'clips'),
+    h('div', { class: 'grow' }, h('b', {}, 'Clipping'), h('div', { class: 'muted small', 'data-clipstate': '' }, clipStateText(st)),
+      st.state !== 'error' && st.message && h('div', { class: 'small', style: 'color:var(--warn, #e0a030)' }, st.message),
+      st.keyErrors && st.keyErrors.length > 0 && h('div', { class: 'small', style: 'color:var(--bad)' }, `${st.keyErrors.join(', ')} ${st.keyErrors.length > 1 ? 'are' : 'is'} taken by another app. Pick another key under Hotkeys.`)),
+    recording && h('button', { class: 'btn sm', onclick: () => run(() => api('clipSaveNow', c.keys[0] ? c.keys[0].seconds : 30)) }, 'Save a clip now'),
+    toggle(c.on, (v) => setClips({ on: v }))));
+
+  // --- the library ---
+  const grid = h('div', { class: 'clipgrid' }, list.map((clip) => clipCard(clip)));
+  root.append(tile('s12', head('Your clips', h('span', { class: 'tag' }, plural(list.length, 'clip')), h('button', { class: 'btn sm', onclick: () => api('clipOpenFolder') }, 'Open folder')),
+    list.length ? grid : h('p', { class: 'muted' }, `No clips yet. ${c.keys[0] ? `In game, press ${c.keys[0].key} and the last ${c.keys[0].seconds} seconds are saved here.` : ''}`)));
+  pictureMissing(list);
+
+  // --- hotkeys ---
+  const keys = c.keys;
+  const setKeys = (next) => setClips({ keys: next });
+  root.append(tile('s6 ctl', head('Hotkeys', keys.length < 6 && h('button', { class: 'btn sm', onclick: () => captureKey(null, (key) => setKeys([...keys, { key, seconds: 60 }])) }, 'Add a hotkey')),
+    h('p', { class: 'muted small' }, 'They work while you play. Give each its own length, for example a short one for a goal and a long one for a whole play. A key alone works for F1 to F12 and keys like Insert or Pause; anything else needs Ctrl, Alt or Shift.'),
+    keys.map((k, i) => h('div', { class: 'opt-row' },
+      h('button', { class: 'btn sm keycap', title: 'Click, then press the keys', onclick: (e) => captureKey(e.currentTarget, (key) => setKeys(keys.map((x, j) => (j === i ? { ...x, key } : x)))) }, k.key),
+      h('span', { class: 'muted small' }, 'saves the last'),
+      select(LENGTH_OPTS, k.seconds, (v) => setKeys(keys.map((x, j) => (j === i ? { ...x, seconds: v } : x))), 150),
+      h('span', { class: 'grow' }),
+      h('button', { class: 'btn sm danger', disabled: keys.length < 2, onclick: () => setKeys(keys.filter((_, j) => j !== i)) }, 'Remove'))),
+    h('p', { class: 'muted small' }, `It keeps the last ${longest} seconds (the longest hotkey) in memory: about ${mb(((c.mbps * 1e6) / 8) * (longest + 2))} while it runs.`)));
+
+  // --- quality ---
+  const rate = slider(2, 80, c.mbps, (v) => setClips({ mbps: v }), (v) => { rateVal.textContent = `${v} Mbps`; rateSub.textContent = sizeText(v); });
+  const rateVal = h('span', { class: 'val wide' }, `${c.mbps} Mbps`);
+  const sizeText = (v) => `About ${mb(((v * 1e6) / 8) * 60)} per minute of clip.`;
+  const rateSub = h('div', { class: 'muted small' }, sizeText(c.mbps));
+  root.append(tile('s6 ctl', head('Quality'),
+    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'What to record'), h('div', { class: 'muted small' }, c.source === 'game' ? 'Only the Rocket League window: the overlays are not in the clip.' : 'The whole main screen, with your overlays.')),
+      seg([['screen', 'Screen'], ['game', 'Game window']], c.source, (v) => setClips({ source: v }))),
+    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Resolution'), h('div', { class: 'muted small' }, 'Smaller is lighter on your PC while you play.')),
+      select([['native', 'Same as the screen'], ['1440', '1440p'], ['1080', '1080p'], ['720', '720p']], c.res, (v) => setClips({ res: v }), 170)),
+    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Frame rate')), seg([[30, '30 fps'], [60, '60 fps']], c.fps, (v) => setClips({ fps: v }))),
+    h('div', { class: 'opt-row' }, h('div', { class: 'lbl' }, h('b', {}, 'Bitrate'), rateSub), rate, typeable(rateVal, rate)),
+    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Video format'), h('div', { class: 'muted small' }, c.codec === 'av1' ? 'Smaller files at the same quality. Needs a recent graphics card to stay light; some apps cannot play it yet.' : 'MP4 that plays everywhere. Uses your graphics card when it can.')),
       select([['h264', 'H.264 (MP4)'], ['av1', 'AV1 (MP4)']], c.codec, (v) => setClips({ codec: v }), 170)),
     c.codec === 'av1' && clipsUI.av1hw === false && h('p', { class: 'small', style: 'color:var(--warn, #e0a030)' }, 'Your graphics card cannot encode AV1, so the processor does it, which can cost frames while you play. H.264 is encoded by the graphics card.')));
   if (clipsUI.av1hw === undefined) {
     clipsUI.av1hw = null;
     const ask = (codec) => VideoEncoder.isConfigSupported({ codec, width: 1920, height: 1080, framerate: 60, bitrate: 12e6, hardwareAcceleration: 'prefer-hardware' }).then((r) => r.supported, () => false);
     ask('av01.0.08M.08').then((ok) => { clipsUI.av1hw = ok; if (ui.tab === 'clips' && !ok) render(); });
-  }
-
-  // --- sound ---
-  const vol = (key, label) => {
-    const val = h('span', { class: 'val' }, `${c[key]}%`);
-    const r = slider(0, 200, c[key], (v) => setClips({ [key]: v }), (v) => { val.textContent = `${v}%`; });
-    return h('div', { class: 'opt-row' }, h('div', { class: 'lbl' }, h('b', {}, label)), r, typeable(val, r));
-  };
-  if (c.mic && !clipsUI.mics) listMics();
-  root.append(tile('s6 ctl', head('Sound'),
-    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Game and PC sound'), h('div', { class: 'muted small' }, 'Everything you hear: the game, and also music or voice chat.')), toggle(c.game, (v) => setClips({ game: v }))),
-    c.game && vol('gameVol', 'Volume'),
-    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Microphone'), h('div', { class: 'muted small' }, 'Your voice, mixed in.')), toggle(c.mic, (v) => { if (v) listMics(true); setClips({ mic: v }); })),
-    c.mic && h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Which microphone')),
-      select([['default', 'Windows default'], ...(clipsUI.mics || []).map((m) => [m.deviceId, m.label || 'Microphone'])], c.micId, (v) => setClips({ micId: v }), 220)),
-    c.mic && vol('micVol', 'Mic volume')));
-
-  // --- saving ---
-  root.append(tile('s6 ctl', head('Saving'),
-    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Clips folder'), h('div', { class: 'muted small', style: 'word-break:break-all' }, st.folder)),
-      h('button', { class: 'btn sm', onclick: () => run(() => api('clipPickFolder')).then(() => loadClips()) }, 'Change')),
-    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Only while Rocket League runs'), h('div', { class: 'muted small' }, 'Nothing is recorded, and the hotkeys stay free, when the game is closed.')), toggle(c.onlyInGame, (v) => setClips({ onlyInGame: v }))),
-    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, '"Clip saved" over the game')), toggle(c.toast, (v) => setClips({ toast: v }))),
-    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Sound when a clip is saved')), toggle(c.sound, (v) => setClips({ sound: v })))));
-  return root;
-};
-
-function clipCard(clip) {
-  const pic = clip.thumb ? h('img', { src: fileUrl(clip.thumb), alt: '', loading: 'lazy', draggable: 'false' }) : icon('clips', 30);
-  return h('button', { class: 'clipcard', onclick: () => openClip(clip) },
-    h('span', { class: `clipthumb${clip.thumb ? '' : ' none'}` }, pic, clip.seconds != null && h('span', { class: 'cliplen' }, mmss(clip.seconds))),
-    h('span', { class: 'name clip' }, clip.name),
-    h('span', { class: 'muted small' }, `${new Date(clip.mtime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} · ${mb(clip.size)}`));
-}
-
-// Clips without a picture (saved by another app, or renamed outside OpenW) get one from their video.
-async function pictureMissing(list) {
-  for (const clip of list.filter((x) => !x.thumb && !clipsUI.picturing.has(x.file)).slice(0, 4)) {
-    clipsUI.picturing.add(clip.file);
-    try {
-      const v = h('video', { muted: '', preload: 'auto', src: fileUrl(clip.file) });
-      await new Promise((ok, bad) => { v.onloadeddata = ok; v.onerror = bad; setTimeout(bad, 8000); });
-      v.currentTime = Math.min(1.5, (v.duration || 2) / 2);
-      await new Promise((ok) => { v.onseeked = ok; setTimeout(ok, 3000); });
-      const cv = h('canvas'); cv.width = 384; cv.height = Math.round((384 * v.videoHeight) / (v.videoWidth || 384)) || 216;
-      cv.getContext('2d').drawImage(v, 0, 0, cv.width, cv.height);
-      await api('clipPicture', clip.file, cv.toDataURL('image/jpeg', 0.82));
-      clip.thumb = true;
-    } catch { /* stays without a picture */ }
-  }
-  if (list.some((x) => x.thumb === true)) loadClips();
-}
-
-async function listMics(ask) {
-  try {
-    if (ask) { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach((t) => t.stop()); } // names show once allowed
-    clipsUI.mics = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications');
-  } catch { clipsUI.mics = []; }
-  if (ui.tab === 'clips') render();
-}
-
-// Click a hotkey button, press the keys: Ctrl/Alt/Shift plus a key, or an F key alone. Escape cancels.
-function captureKey(btn, done) {
-  const NAMES = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', ScrollLock: 'Scrolllock', ' ': 'Space' };
-  const label = btn || h('span');
-  const old = label.textContent;
-  label.textContent = 'Press keys…';
-  label.classList.add('listening');
-  api('clipKeysPaused', true).catch(() => {});
-  const finish = (key) => {
-    window.removeEventListener('keydown', onKey, true);
-    label.classList.remove('listening');
-    label.textContent = old;
-    api('clipKeysPaused', false).catch(() => {});
-    if (key) done(key);
-  };
-  const onKey = async (e) => {
-    e.preventDefault(); e.stopPropagation();
-    if (e.key === 'Escape') { finish(null); return; }
-    if (['Control', 'Alt', 'Shift', 'Meta', 'OS'].includes(e.key)) { label.textContent = `${[e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift'].filter(Boolean).join('+')}+…`; return; }
-    const main = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3) : /^Digit\d$/.test(e.code) ? e.code.slice(5) : /^Numpad\d$/.test(e.code) ? `num${e.code.slice(6)}` : NAMES[e.key] || e.key;
-    const text = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Super', main].filter(Boolean).join('+');
-    const key = await api('clipKey', text);
-    if (!key) { label.textContent = `${text} cannot be used. Try another…`; return; }
-    if (clipCfg().keys.some((k) => k.key.toLowerCase() === key.toLowerCase()) && key !== old) { label.textContent = `${key} is already used. Try another…`; return; }
-    finish(key);
-  };
-  window.addEventListener('keydown', onKey, true);
-  if (!btn) toast('Press the keys for the new hotkey (Escape cancels).');
-}
-
-// The player: watch, rename, trim, show in folder, delete. It sits over the page, so a page update
-// does not stop the video.
-function openClip(clip) {
-  document.querySelector('.player') && document.querySelector('.player').remove();
-  const video = h('video', { src: fileUrl(clip.file), controls: '', autoplay: '', class: 'pvideo' });
-  const close = () => { video.pause(); video.removeAttribute('src'); video.load(); box.remove(); document.removeEventListener('keydown', onEsc); };
-  const onEsc = (e) => { if (e.key === 'Escape' && !e.target.closest('input')) close(); };
-  document.addEventListener('keydown', onEsc);
-  const name = field({ value: clip.name, maxlength: 120, class: 'grow', 'aria-label': 'Clip name' });
-  const rename = async () => {
-    const v = name.value.trim();
-    if (!v || v === clip.name) return;
-    try { clip.file = await api('clipRename', clip.file, v); clip.name = v; toast('Renamed.'); loadClips(); } catch (e) { toast(reason(e), true); name.value = clip.name; }
-  };
-  name.addEventListener('keydown', (e) => { if (e.key === 'Enter') name.blur(); });
-  name.addEventListener('change', rename);
-  const trimBox = h('div', { class: 'trim', hidden: '' });
-  const trimBtn = h('button', { class: 'btn sm', onclick: () => { trimBox.hidden = !trimBox.hidden; if (!trimBox.hidden) buildTrim(); } }, 'Trim');
-  function buildTrim() {
-    const dur = video.duration || clip.seconds || 0;
-    if (!dur) { trimBox.replaceChildren(h('p', { class: 'muted small' }, 'Loading the clip…')); video.addEventListener('loadedmetadata', buildTrim, { once: true }); return; }
-    let from = 0, to = Math.round(dur * 10) / 10;
-    const fromVal = h('span', { class: 'val' }, mmss(from)), toVal = h('span', { class: 'val' }, `${to.toFixed(1)} s`);
-    const fromR = slider(0, to, 0, () => {}, (v) => { from = v; fromVal.textContent = `${v.toFixed(1)} s`; video.currentTime = v; }, 0.1);
-    const toR = slider(0, to, to, () => {}, (v) => { to = v; toVal.textContent = `${v.toFixed(1)} s`; video.currentTime = v; }, 0.1);
-    fromVal.textContent = '0.0 s';
-    trimBox.replaceChildren(
-      h('div', { class: 'opt-row' }, h('b', { style: 'width:60px' }, 'Start'), fromR, typeable(fromVal, fromR)),
-      h('div', { class: 'opt-row' }, h('b', { style: 'width:60px' }, 'End'), toR, typeable(toVal, toR)),
-      h('div', { class: 'row' }, h('p', { class: 'muted small grow' }, 'The copy starts on the nearest frame the video can start from, up to a second before Start. Nothing is re-encoded, so it keeps the full quality.'),
-        h('button', { class: 'btn primary sm', onclick: async () => {
-          if (to <= from) { toast('The end has to be after the start.', true); return; }
-          try { const r = await api('clipTrim', clip.file, from, to); toast(`Saved a trimmed copy: ${r.file.split(/[\\/]/).pop()}`); loadClips(); } catch (e) { toast(reason(e), true); }
-        } }, 'Save trimmed copy')));
-  }
-  const box = h('div', { class: 'player', onclick: (e) => { if (e.target === box) close(); } },
-    h('div', { class: 'pbox' }, video,
-      h('div', { class: 'row' }, name, trimBtn,
-        h('button', { class: 'btn sm', onclick: () => api('clipReveal', clip.file).catch((e) => toast(reason(e), true)) }, 'Show in folder'),
-        h('button', { class: 'btn sm danger', onclick: async () => {
-          if (!window.confirm(`Delete “${clip.name}”? It goes to the Recycle Bin.`)) return;
-          try { await api('clipDelete', clip.file); close(); toast('Clip moved to the Recycle Bin.'); loadClips(); } catch (e) { toast(reason(e), true); }
-        } }, 'Delete'),
-        h('button', { class: 'btn sm', onclick: close }, 'Close')),
-      trimBox));
-  document.body.append(box);
-}
-
+  }
+
+  // --- sound ---
+  const vol = (key, label) => {
+    const val = h('span', { class: 'val' }, `${c[key]}%`);
+    const r = slider(0, 200, c[key], (v) => setClips({ [key]: v }), (v) => { val.textContent = `${v}%`; });
+    return h('div', { class: 'opt-row' }, h('div', { class: 'lbl' }, h('b', {}, label)), r, typeable(val, r));
+  };
+  if (c.mic && !clipsUI.mics) listMics();
+  root.append(tile('s6 ctl', head('Sound'),
+    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Game and PC sound'), h('div', { class: 'muted small' }, 'Everything you hear: the game, and also music or voice chat.')), toggle(c.game, (v) => setClips({ game: v }))),
+    c.game && vol('gameVol', 'Volume'),
+    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Microphone'), h('div', { class: 'muted small' }, 'Your voice, mixed in.')), toggle(c.mic, (v) => { if (v) listMics(true); setClips({ mic: v }); })),
+    c.mic && h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Which microphone')),
+      select([['default', 'Windows default'], ...(clipsUI.mics || []).map((m) => [m.deviceId, m.label || 'Microphone'])], c.micId, (v) => setClips({ micId: v }), 220)),
+    c.mic && vol('micVol', 'Mic volume')));
+
+  // --- saving ---
+  root.append(tile('s6 ctl', head('Saving'),
+    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Clips folder'), h('div', { class: 'muted small', style: 'word-break:break-all' }, st.folder)),
+      h('button', { class: 'btn sm', onclick: () => run(() => api('clipPickFolder')).then(() => loadClips()) }, 'Change')),
+    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Only while Rocket League runs'), h('div', { class: 'muted small' }, 'Nothing is recorded, and the hotkeys stay free, when the game is closed.')), toggle(c.onlyInGame, (v) => setClips({ onlyInGame: v }))),
+    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, '"Clip saved" over the game')), toggle(c.toast, (v) => setClips({ toast: v }))),
+    h('div', { class: 'opt-row' }, h('div', { class: 'lbl grow' }, h('b', {}, 'Sound when a clip is saved')), toggle(c.sound, (v) => setClips({ sound: v })))));
+  return root;
+};
+
+function clipCard(clip) {
+  const pic = clip.thumb ? h('img', { src: fileUrl(clip.thumb), alt: '', loading: 'lazy', draggable: 'false' }) : icon('clips', 30);
+  return h('button', { class: 'clipcard', onclick: () => openClip(clip) },
+    h('span', { class: `clipthumb${clip.thumb ? '' : ' none'}` }, pic, clip.seconds != null && h('span', { class: 'cliplen' }, mmss(clip.seconds))),
+    h('span', { class: 'name clip' }, clip.name),
+    h('span', { class: 'muted small' }, `${new Date(clip.mtime).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} · ${mb(clip.size)}`));
+}
+
+// Clips without a picture (saved by another app, or renamed outside OpenW) get one from their video.
+async function pictureMissing(list) {
+  for (const clip of list.filter((x) => !x.thumb && !clipsUI.picturing.has(x.file)).slice(0, 4)) {
+    clipsUI.picturing.add(clip.file);
+    try {
+      const v = h('video', { muted: '', preload: 'auto', src: fileUrl(clip.file) });
+      await new Promise((ok, bad) => { v.onloadeddata = ok; v.onerror = bad; setTimeout(bad, 8000); });
+      v.currentTime = Math.min(1.5, (v.duration || 2) / 2);
+      await new Promise((ok) => { v.onseeked = ok; setTimeout(ok, 3000); });
+      const cv = h('canvas'); cv.width = 384; cv.height = Math.round((384 * v.videoHeight) / (v.videoWidth || 384)) || 216;
+      cv.getContext('2d').drawImage(v, 0, 0, cv.width, cv.height);
+      await api('clipPicture', clip.file, cv.toDataURL('image/jpeg', 0.82));
+      clip.thumb = true;
+    } catch { /* stays without a picture */ }
+  }
+  if (list.some((x) => x.thumb === true)) loadClips();
+}
+
+async function listMics(ask) {
+  try {
+    if (ask) { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach((t) => t.stop()); } // names show once allowed
+    clipsUI.mics = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications');
+  } catch { clipsUI.mics = []; }
+  if (ui.tab === 'clips') render();
+}
+
+// Click a hotkey button, press the keys: Ctrl/Alt/Shift plus a key, or an F key alone. Escape cancels.
+function captureKey(btn, done) {
+  const NAMES = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', ScrollLock: 'Scrolllock', ' ': 'Space' };
+  const label = btn || h('span');
+  const old = label.textContent;
+  label.textContent = 'Press keys…';
+  label.classList.add('listening');
+  api('clipKeysPaused', true).catch(() => {});
+  const finish = (key) => {
+    window.removeEventListener('keydown', onKey, true);
+    label.classList.remove('listening');
+    label.textContent = old;
+    api('clipKeysPaused', false).catch(() => {});
+    if (key) done(key);
+  };
+  const onKey = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === 'Escape') { finish(null); return; }
+    if (['Control', 'Alt', 'Shift', 'Meta', 'OS'].includes(e.key)) { label.textContent = `${[e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift'].filter(Boolean).join('+')}+…`; return; }
+    const main = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3) : /^Digit\d$/.test(e.code) ? e.code.slice(5) : /^Numpad\d$/.test(e.code) ? `num${e.code.slice(6)}` : NAMES[e.key] || e.key;
+    const text = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Super', main].filter(Boolean).join('+');
+    const key = await api('clipKey', text);
+    if (!key) { label.textContent = `${text} cannot be used. Try another…`; return; }
+    if (clipCfg().keys.some((k) => k.key.toLowerCase() === key.toLowerCase()) && key !== old) { label.textContent = `${key} is already used. Try another…`; return; }
+    finish(key);
+  };
+  window.addEventListener('keydown', onKey, true);
+  if (!btn) toast('Press the keys for the new hotkey (Escape cancels).');
+}
+
+// The player: watch, rename, trim, show in folder, delete. It sits over the page, so a page update
+// does not stop the video.
+function openClip(clip) {
+  document.querySelector('.player') && document.querySelector('.player').remove();
+  const video = h('video', { src: fileUrl(clip.file), controls: '', autoplay: '', class: 'pvideo' });
+  const close = () => { video.pause(); video.removeAttribute('src'); video.load(); box.remove(); document.removeEventListener('keydown', onEsc); };
+  const onEsc = (e) => { if (e.key === 'Escape' && !e.target.closest('input')) close(); };
+  document.addEventListener('keydown', onEsc);
+  const name = field({ value: clip.name, maxlength: 120, class: 'grow', 'aria-label': 'Clip name' });
+  const rename = async () => {
+    const v = name.value.trim();
+    if (!v || v === clip.name) return;
+    try { clip.file = await api('clipRename', clip.file, v); clip.name = v; toast('Renamed.'); loadClips(); } catch (e) { toast(reason(e), true); name.value = clip.name; }
+  };
+  name.addEventListener('keydown', (e) => { if (e.key === 'Enter') name.blur(); });
+  name.addEventListener('change', rename);
+  const trimBox = h('div', { class: 'trim', hidden: '' });
+  const trimBtn = h('button', { class: 'btn sm', onclick: () => { trimBox.hidden = !trimBox.hidden; if (!trimBox.hidden) buildTrim(); } }, 'Trim');
+  function buildTrim() {
+    const dur = video.duration || clip.seconds || 0;
+    if (!dur) { trimBox.replaceChildren(h('p', { class: 'muted small' }, 'Loading the clip…')); video.addEventListener('loadedmetadata', buildTrim, { once: true }); return; }
+    let from = 0, to = Math.round(dur * 10) / 10;
+    const fromVal = h('span', { class: 'val' }, mmss(from)), toVal = h('span', { class: 'val' }, `${to.toFixed(1)} s`);
+    const fromR = slider(0, to, 0, () => {}, (v) => { from = v; fromVal.textContent = `${v.toFixed(1)} s`; video.currentTime = v; }, 0.1);
+    const toR = slider(0, to, to, () => {}, (v) => { to = v; toVal.textContent = `${v.toFixed(1)} s`; video.currentTime = v; }, 0.1);
+    fromVal.textContent = '0.0 s';
+    trimBox.replaceChildren(
+      h('div', { class: 'opt-row' }, h('b', { style: 'width:60px' }, 'Start'), fromR, typeable(fromVal, fromR)),
+      h('div', { class: 'opt-row' }, h('b', { style: 'width:60px' }, 'End'), toR, typeable(toVal, toR)),
+      h('div', { class: 'row' }, h('p', { class: 'muted small grow' }, 'The copy starts on the nearest frame the video can start from, up to a second before Start. Nothing is re-encoded, so it keeps the full quality.'),
+        h('button', { class: 'btn primary sm', onclick: async () => {
+          if (to <= from) { toast('The end has to be after the start.', true); return; }
+          try { const r = await api('clipTrim', clip.file, from, to); toast(`Saved a trimmed copy: ${r.file.split(/[\\/]/).pop()}`); loadClips(); } catch (e) { toast(reason(e), true); }
+        } }, 'Save trimmed copy')));
+  }
+  const box = h('div', { class: 'player', onclick: (e) => { if (e.target === box) close(); } },
+    h('div', { class: 'pbox' }, video,
+      h('div', { class: 'row' }, name, trimBtn,
+        h('button', { class: 'btn sm', onclick: () => api('clipReveal', clip.file).catch((e) => toast(reason(e), true)) }, 'Show in folder'),
+        h('button', { class: 'btn sm danger', onclick: async () => {
+          if (!window.confirm(`Delete “${clip.name}”? It goes to the Recycle Bin.`)) return;
+          try { await api('clipDelete', clip.file); close(); toast('Clip moved to the Recycle Bin.'); loadClips(); } catch (e) { toast(reason(e), true); }
+        } }, 'Delete'),
+        h('button', { class: 'btn sm', onclick: close }, 'Close')),
+      trimBox));
+  document.body.append(box);
+}
+
 /* ---------- settings ---------- */
 
 views.settings = () => {
@@ -1549,7 +1554,7 @@ function updatesTile() {
 window.openw.on('progress', (p) => {
   if (p.what === 'every') lab.progress = p;
   const el = document.querySelector(`[data-progress="${p.what}"]`);
-  if (el) el.textContent = p.what === 'every' ? `Writing arenas… ${p.done} of ${p.total}` : `Writing queued changes… ${p.done} of ${p.total}`;
+  if (el) el.textContent = p.what === 'every' ? `${p.done * 2 <= p.total ? 'Reading arenas' : 'Writing arenas'}… ${Math.round((p.done / p.total) * 100)}%` : `Writing queued changes… ${p.done} of ${p.total}`;
 });
 
 window.openw.on('state', ({ state, flushed, notice }) => {

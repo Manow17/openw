@@ -498,7 +498,9 @@ function makeEngine(cooked, running = { value: false }) {
 
   test('arenas are scanned from the install with their parts', () => {
     const cache = {};
-    const list = arenas.scanArenas(real, cache);
+    const backups = path.join(process.env.APPDATA || '', 'OpenW', 'backups');
+    const original = (f) => (fs.existsSync(path.join(backups, f.toLowerCase())) ? path.join(backups, f.toLowerCase()) : path.join(real, f));
+    const list = arenas.scanArenas(real, cache, [], new Map(), original);
     const cs = list.find((a) => a.id === 'cs_p'), beach = list.find((a) => a.id === 'beach_p'), park = list.find((a) => a.id === 'park_p');
     assert.ok(list.length > 50 && cs && beach && park);
     assert.strictEqual(cs.field.toLowerCase(), 'cs_field.upk');
@@ -511,7 +513,7 @@ function makeEngine(cooked, running = { value: false }) {
     // Champions Field stays its own map; its stadium file loads Salty Shores' stadium
     assert.deepStrictEqual([main.gameFile, main.from, main.side, main.gameplay], [cs.file, cs.file, 'surroundings', true]);
     assert.ok(plan.ops.some((o) => o.from === beach.field && o.side === 'stadium' && main.renames[cs.field.replace(/\.upk$/i, '')] === o.gameFile.replace(/\.upk$/i, '')));
-    const again = arenas.scanArenas(real, cache); // second pass comes from the cache
+    const again = arenas.scanArenas(real, cache, [], new Map(), original); // second pass comes from the cache
     assert.strictEqual(again.length, list.length);
     console.log(`        ${list.length} arenas, ${list.filter((a) => a.field).length} with a stadium part, ${list.filter((a) => arenas.snowPlan(a, list)).length} with a snow option`);
   }, !real);
@@ -597,14 +599,26 @@ function makeEngine(cooked, running = { value: false }) {
     const keys = fs.existsSync(keysFile) ? upk.parseKeys(fs.readFileSync(keysFile, 'utf8')) : [];
     const { maps } = readTexts(real, keys);
     if (!maps.size) return; // the game text needs a key list
-    const list = arenas.scanArenas(real, {}, keys, maps);
+    const backups = path.join(process.env.APPDATA || '', 'OpenW', 'backups');
+    const original = (f) => (fs.existsSync(path.join(backups, f.toLowerCase())) ? path.join(backups, f.toLowerCase()) : path.join(real, f));
+    const list = arenas.scanArenas(real, {}, keys, maps, original);
     const byId = (id) => list.find((a) => a.id === id);
     assert.strictEqual(byId('cs_day_p').name, 'Champions Field (Day)');
     assert.strictEqual(byId('underwater_p').name, 'AquaDome');
     assert.ok(byId('stadium_p').standard && !byId('labs_basin_p').standard && !byId('hoopsstadium_p').standard);
-    const ops = arenas.everyMatchOps(byId('stadium_p'), list);
-    assert.ok(ops.length > 30 && ops.every((o) => o.kind === 'copy' && o.sourceGameFile === byId('stadium_p').file && o.group === 'everymatch'));
-    assert.ok(!ops.some((o) => /labs_|hoops|shattershot/i.test(o.gameFile)));
+    // same stadium every match: every standard arena with a stadium or sound part; one-file ones are left
+    const { stadium, targets, skipped } = arenas.everyMatchTargets(byId('stadium_p'), list);
+    assert.strictEqual(stadium.id, 'stadium_p');
+    assert.ok(targets.length > 50 && targets.every((a) => a.standard && a.id !== 'stadium_p'), `${targets.length} arenas`);
+    assert.ok(!targets.some((a) => /labs_|hoops|shattershot/i.test(a.file)));
+    assert.deepStrictEqual(skipped.map((s) => s.arena.id).sort(), ['eurostadium_dusk_p', 'eurostadium_p']);
+    // each arena keeps its own main file: written from itself, so its id and object numbering stay
+    for (const place of targets) {
+      const ops = arenas.everyMatchOps(byId('stadium_p'), place, list);
+      assert.ok(ops.length, `${place.name} gets the stadium`);
+      assert.ok(ops.every((o) => o.create || o.from.toLowerCase() === o.gameFile.toLowerCase()), `${place.name}: only its own file is written over`);
+      assert.ok(ops.every((o) => o.group === 'everymatch' && o.place === place.id && o.stadium === 'stadium_p'));
+    }
     assert.deepStrictEqual(arenas.arenasUsing(list, 'Underwater_Field.upk').map((a) => a.name), ['AquaDome']);
     // snow: only arenas with a snowy version in the game, and not the snowy version itself
     assert.deepStrictEqual(['stadium_p', 'park_night_p', 'underwater_p', 'cs_p', 'stadium_winter_p'].map((id) => (arenas.snowPlan(byId(id), list) || {}).snowy),
@@ -619,26 +633,34 @@ function makeEngine(cooked, running = { value: false }) {
     const mann = arena('eurostadium_p', 'Mannfield', []);
     const dfh = arena('stadium_p', 'DFH Stadium', ['Stadium_OOB_Audio_Map.upk']);
     const winter = arena('stadium_winter_p', 'DFH Stadium (Snowy)', ['Stadium_OOB_Audio_Map.upk']);
-    const fni = { ...arena('fni_stadium_p', 'Forbidden Temple (Fire & Ice)', ['FNI_Stadium_VFX.upk']), file: 'FNI_Stadium_P.upk' };
+    const fni = { ...arena('fni_stadium_p', 'Forbidden Temple (Fire & Ice)', ['FNI_Stadium_VFX.upk', 'FNI_Stadium_SFX.upk']), file: 'FNI_Stadium_P.upk' };
     const all = [aqua, neon, mann, dfh, winter, fni];
     const changes = new Map();
     for (const op of [...arenas.mergePlan(neon, aqua, all).ops, ...arenas.mergePlan(mann, dfh, all).ops, ...arenas.mergePlan(dfh, winter, all).ops]) changes.set(op.gameFile.toLowerCase(), op);
     // the merged arenas are listed under their merge (the added files are not arenas)
     assert.deepStrictEqual(arenas.mergedArenas(all, changes).map((m) => [m.arena.id, m.label]).sort(),
       [['stadium_p', 'Mannfield stadium in DFH Stadium'], ['stadium_winter_p', 'DFH Stadium stadium in DFH Stadium (Snowy)'], ['underwater_p', 'Neon Fields stadium in AquaDome']]);
-    // every match with a built merge builds it again in every arena's place, with the same added files
-    const b = changes.get('stadium_winter_p.upk');
-    let ops = arenas.everyMatchOps(winter, all, changes, 'x');
-    // (the merged map is the place's own, with its stadium out and its parts pointed at the added files)
-    assert.ok(ops.length && ops.every((o) => o.kind === 'build' && o.from === 'stadium_winter_p.upk' && o.renames === b.renames && o.side === 'surroundings' && o.gameplay === true && o.lights === true));
-    ops = arenas.everyMatchOps(aqua, all, changes, 'Neon Fields stadium in AquaDome');
-    assert.deepStrictEqual(ops.map((o) => `${o.gameFile}<-${o.from}`), ['music_p.upk<-underwater_p.upk', 'eurostadium_p.upk<-underwater_p.upk', 'FNI_Stadium_P.upk<-underwater_p.upk']);
-    assert.ok(ops.every((o) => o.chosen === 'underwater_p' && o.label.startsWith('Neon Fields stadium in AquaDome in place of')));
-    ops = arenas.everyMatchOps(dfh, all, changes);
-    assert.ok(ops.length && ops.every((o) => o.from === 'stadium_p.upk' && o.side === 'surroundings' && o.gameplay === true));
+    // every match with a merged arena shows the stadium of that merge, in every other arena that has
+    // somewhere to load it; arenas you merged keep your merge, the merge's stadium arena shows its own
+    assert.strictEqual(arenas.everyStadium(aqua, all, changes).id, 'music_p');
+    let t = arenas.everyMatchTargets(aqua, all, changes);
+    assert.deepStrictEqual(t.targets.map((a) => a.id), ['fni_stadium_p']);
+    assert.deepStrictEqual(t.skipped.map((s) => [s.arena.id, s.why]), [['eurostadium_p', 'single']]);
+    let ops = arenas.everyMatchOps(aqua, fni, all, changes, 'Neon Fields stadium in AquaDome');
+    assert.ok(ops.length && ops.every((o) => o.chosen === 'underwater_p' && o.stadium === 'music_p' && o.place === 'fni_stadium_p' && o.every === 'Neon Fields stadium in AquaDome'));
+    assert.ok(ops.some((o) => o.create && o.from === 'Music_Field.upk' && o.side === 'stadium'), 'Neon Fields\' stadium is loaded');
+    const main = ops.find((o) => !o.create);
+    assert.deepStrictEqual([main.gameFile, main.from, main.gameplay], ['FNI_Stadium_P.upk', 'FNI_Stadium_P.upk', true]);
+    // a merge into a one-file arena replaces its main file: offline only, and every match never does it
+    assert.strictEqual(arenas.mergePlan(neon, mann, all).online, false);
+    assert.strictEqual(arenas.mergePlan(neon, fni, all).online, true);
+    assert.deepStrictEqual(arenas.everyMatchOps(neon, mann, all), []);
+    t = arenas.everyMatchTargets(dfh, all, changes);
+    assert.strictEqual(t.stadium.id, 'eurostadium_p', 'DFH Stadium shows its merge\'s stadium (Mannfield\'s)');
     // merged arenas get no snow: the snowy version would replace what makes the merge
     for (const a of [aqua, winter, dfh]) assert.strictEqual(arenas.snowPlan(a, all, changes), null);
     assert.strictEqual(arenas.snowPlan(dfh, all).op.sourceGameFile, 'stadium_winter_p.upk');
+    assert.strictEqual(arenas.snowPlan(dfh, all).online, false, 'snow replaces the arena file: offline only');
   });
 
   test('every match is out of date once a merge changes the arena it shows', () => {
@@ -647,17 +669,26 @@ function makeEngine(cooked, running = { value: false }) {
     const aqua = arena('underwater_p', 'AquaDome', ['Underwater_Field.upk', 'Underwater_FX.upk']);
     const neon = arena('music_p', 'Neon Fields', ['Music_Field.upk', 'Music_Effects.upk']);
     const mann = arena('eurostadium_p', 'Mannfield', []);
-    const all = [aqua, neon, mann];
+    const park = arena('park_p', 'Beckwith Park', ['Park_SFX.upk']);
+    const all = [aqua, neon, mann, park];
     const changes = new Map();
     const on = () => [...changes.values()].filter((o) => o.group === 'everymatch');
-    for (const op of arenas.everyMatchOps(aqua, all, changes)) changes.set(op.gameFile.toLowerCase(), op);
-    assert.ok(arenas.sameEveryMatch(on(), arenas.everyMatchOps(aqua, all, changes)), 'nothing changed');
-    // Neon Fields' stadium merged into AquaDome: every match should now show the merge
+    const turnOn = () => {
+      for (const [k, o] of [...changes]) if (o.group === 'everymatch') changes.delete(k);
+      for (const place of arenas.everyMatchTargets(aqua, all, changes).targets) for (const op of arenas.everyMatchOps(aqua, place, all, changes)) changes.set(op.gameFile.toLowerCase(), op);
+    };
+    turnOn();
+    assert.ok(arenas.sameEveryMatch(on(), aqua, all, changes), 'nothing changed');
+    // Neon Fields' stadium merged into AquaDome: every match should now show the merge's stadium
     for (const op of arenas.mergePlan(neon, aqua, all).ops) changes.set(op.gameFile.toLowerCase(), op);
-    assert.ok(!arenas.sameEveryMatch(on(), arenas.everyMatchOps(aqua, all, changes)));
+    assert.ok(!arenas.sameEveryMatch(on(), aqua, all, changes));
     // brought up to date, it is the same again
-    for (const op of arenas.everyMatchOps(aqua, all, changes)) changes.set(op.gameFile.toLowerCase(), op);
-    assert.ok(arenas.sameEveryMatch(on(), arenas.everyMatchOps(aqua, all, changes)));
+    turnOn();
+    assert.ok(arenas.sameEveryMatch(on(), aqua, all, changes));
+    // written the old way (a copy of the arena over each file, before 0.4.11): out of date, and put back
+    const old = { kind: 'copy', gameFile: 'park_p.upk', sourceGameFile: 'underwater_p.upk', group: 'everymatch', chosen: 'underwater_p' };
+    assert.ok(arenas.oldEveryMatch(old) && !arenas.oldEveryMatch(on()[0]) && !arenas.oldEveryMatch({ group: 'merge:a:b' }));
+    assert.ok(!arenas.sameEveryMatch([old], aqua, all, changes));
   });
 
   test('ground under the new pitch is lowered, even when it has no position of its own', () => {
@@ -676,6 +707,57 @@ function makeEngine(cooked, running = { value: false }) {
     const after = mapbuild.inventory(again).find((i) => i.name === 'OL_Terrain_Ground_Main');
     assert.strictEqual(Math.round(after.box.c.z), Math.round(before.box.c.z) - 25);
     assert.strictEqual(again.t.exports.length, P.t.exports.length);
+  }, !real);
+
+  test('an arena file OpenW builds from itself keeps its package id and object numbering (what online matches check)', () => {
+    const file = ['Park_P.upk', 'Stadium_P.upk', 'Woods_P.upk'].find((f) => fs.existsSync(path.join(real, f)) && upk.probeFile(path.join(real, f), []));
+    if (!file) return;
+    const backups = path.join(process.env.APPDATA || '', 'OpenW', 'backups');
+    const src = fs.existsSync(path.join(backups, file.toLowerCase())) ? path.join(backups, file.toLowerCase()) : path.join(real, file);
+    const buf = fs.readFileSync(src);
+    const P = mapbuild.open(buf, []);
+    mapbuild.keepSide(P, 'surroundings', { gameplay: true, lights: true });
+    const out = mapbuild.repack(P, P.t.pkg.key, { [`${file.replace(/_P\.upk$/i, '')}_SFX`]: 'BPtest' });
+    const id = (b) => { const s = upk.parseSummary(b); let o = s.guidOffset + 16; const n = b.readInt32LE(o); return { guid: b.subarray(s.guidOffset, s.guidOffset + 16).toString('hex'), gens: b.subarray(o, o + 4 + n * 12).toString('hex'), exports: s.exportCount }; };
+    assert.deepStrictEqual(id(out), id(buf));
+  }, !real);
+
+  test('same stadium every match, built from real arenas: each arena keeps its own id and numbering and loads the stadium', async () => {
+    const backups = path.join(process.env.APPDATA || '', 'OpenW', 'backups');
+    const original = (f) => (fs.existsSync(path.join(backups, f.toLowerCase())) ? path.join(backups, f.toLowerCase()) : path.join(real, f));
+    const list = arenas.scanArenas(real, {}, [], new Map(), original).map((a) => ({ ...a, standard: !/^(labs_|hoops|shattershot|ko_)/i.test(a.id) }));
+    const byId = (id) => list.find((a) => a.id === id);
+    const chosen = byId('stadium_p'), park = byId('park_p'), aqua = byId('underwater_p');
+    const usable = (a) => a && !a.locked.length;
+    if (![chosen, park, aqua].every(usable)) return;
+    // a sandbox game folder: copies of these arenas' files
+    const dir = fs.mkdtempSync(path.join(tmp, 'every-'));
+    const files = new Set([chosen, park, aqua].flatMap((a) => [a.file, ...a.parts.map((p) => p.file)]));
+    for (const f of files) fs.copyFileSync(original(f), path.join(dir, f));
+    const sandbox = list.filter((a) => [chosen, park, aqua].includes(a));
+    const { engine } = makeEngine(dir);
+    const opened = new Map();
+    const open = (f) => { const k = f.toLowerCase(); if (!opened.has(k)) { let p = null; try { p = mapbuild.open(fs.readFileSync(path.join(dir, f)), []); } catch { /* left out */ } opened.set(k, p); } return opened.get(k); };
+    const id = (file) => { const b = fs.readFileSync(file); const s = upk.parseSummary(b); const o = s.guidOffset + 16, n = b.readInt32LE(o); return `${b.subarray(s.guidOffset, o).toString('hex')}|${b.subarray(o, o + 4 + n * 12).toString('hex')}|${s.exportCount}`; };
+    const before = Object.fromEntries([park, aqua].map((a) => [a.id, id(path.join(dir, a.file))]));
+    const { targets } = arenas.everyMatchTargets(chosen, sandbox);
+    assert.deepStrictEqual(targets.map((a) => a.id).sort(), ['park_p', 'underwater_p']);
+    const ops = [];
+    for (const place of targets) ops.push(...arenas.everyMatchOps(chosen, place, sandbox, new Map(), chosen.name, arenas.mergeInfo(chosen, place, open, mapbuild)));
+    opened.clear();
+    for (const op of ops) await engine.apply(op);
+    for (const place of [park, aqua]) {
+      const file = path.join(dir, place.file);
+      assert.strictEqual(id(file), before[place.id], `${place.name} keeps its package id and object numbering`);
+      // its stadium or sound part now loads a file OpenW added, holding DFH Stadium's stadium
+      const names = upk.readPackageFile(file).names.map((n) => n.text);
+      const added = ops.filter((o) => o.create && o.place === place.id && o.side === 'stadium');
+      assert.ok(added.length && added.every((o) => names.includes(o.gameFile.replace(/\.upk$/, '')) && fs.existsSync(path.join(dir, o.gameFile))), `${place.name} loads the stadium`);
+    }
+    // and turning it off puts every file back, the added ones gone
+    for (const rec of engine.list().active) await engine.revert(rec.key);
+    for (const place of [park, aqua]) assert.strictEqual(id(path.join(dir, place.file)), before[place.id]);
+    assert.ok(!ops.some((o) => o.create && fs.existsSync(path.join(dir, o.gameFile))));
   }, !real);
 
   test('a map is taken apart and put back together without changing anything else', () => {

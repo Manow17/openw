@@ -291,36 +291,41 @@ function arenaChanges() {
 }
 
 const fileSize = (file) => { try { return fs.statSync(file).size; } catch { return 0; } };
-// How big each arena file becomes with "same arena every match" on the chosen arena: its merge as built
-// (or, while that is still queued, the map it is built from), or a copy of the file it loads.
-function everyFileSize(chosen, list, changes) {
-  const key = chosen.file.toLowerCase(), op = changes.get(key);
-  if (op && op.kind === 'build' && op.group !== 'everymatch') {
-    const rec = engine.list().active.find((r) => r.key === key);
-    return rec && rec.op === op ? rec.written.size : fileSize(engine.pristine(op.from));
-  }
-  return fileSize(engine.pristine(arenas.effectiveArena(chosen, list, changes).file));
-}
-// The every-match ops for an arena, under the name of its merge if it has one. An arena whose
-// file OpenW cannot open (it needs a key list) cannot be written over, so it keeps its own look
-// (skipped); locked: files of the chosen arena itself that cannot be opened.
+// "Same stadium every match" for an arena (arenas.js): the arenas it changes, the ones it leaves
+// (one-file arenas, and arenas whose files need a key list), the files of the stadium that cannot be
+// opened (it cannot be done at all then), and about how much disk space it takes: each arena's
+// main file is backed up and written again, and the stadium is added to it.
 function everyPlan(chosen, list, changes) {
   const merge = arenas.mergedArenas(list, changes).find((m) => m.arena.id === chosen.id);
-  const all = arenas.everyMatchOps(chosen, list, changes, merge ? merge.label : chosen.name);
-  const blocked = (op) => arenas.lockedFiles(list, [op.gameFile]).length > 0;
-  const source = all[0] ? [all[0].from, all[0].sourceGameFile] : [];
+  const { stadium, targets, skipped } = arenas.everyMatchTargets(chosen, list, changes);
+  const needsKey = (a) => arenas.lockedFiles(list, [a.file, ...a.parts.map((p) => p.file)]).length > 0;
+  const stadiumFiles = [stadium.file, ...stadium.parts.map((p) => p.file)];
+  const stadiumSize = (stadium.field ? fileSize(engine.pristine(stadium.field)) : 0) + fileSize(engine.pristine(stadium.file));
+  const ready = targets.filter((a) => !needsKey(a));
   return {
-    ops: all.filter((op) => !blocked(op)),
-    skipped: all.filter(blocked).map((op) => (list.find((a) => a.file.toLowerCase() === op.gameFile.toLowerCase()) || { name: op.gameFile }).name),
-    locked: arenas.lockedFiles(list, [chosen.file, arenas.effectiveArena(chosen, list, changes).file, ...source]),
+    stadium, label: merge ? merge.label : chosen.name, targets: ready,
+    skipped: [...skipped.map((s) => s.arena.name), ...targets.filter(needsKey).map((a) => a.name)],
+    single: skipped.map((s) => s.arena.name),
+    locked: arenas.lockedFiles(list, stadiumFiles),
+    bytes: ready.reduce((sum, a) => sum + 2 * fileSize(engine.pristine(a.file)) + stadiumSize, 0),
   };
 }
-const everyOpsFor = (chosen, list, changes) => everyPlan(chosen, list, changes).ops;
 // Every match is out of date when a merge was made, changed or reverted since it was turned on.
 function everyMatchStale(list, changes) {
   const on = [...changes.values()].filter((op) => op.group === 'everymatch');
   const chosen = on.length && list.find((a) => a.id === on[0].chosen);
-  return !!chosen && !arenas.sameEveryMatch(on, everyOpsFor(chosen, list, changes));
+  return !!chosen && !arenas.sameEveryMatch(on, chosen, list, changes);
+}
+// "Same arena every match" as written before 0.4.11 (a copy of another arena over each arena
+// file) disconnects every online match in those arenas: it is put back, with a line for the page.
+async function retireOldEveryMatch() {
+  const { active, queue } = engine.list();
+  const old = active.filter((r) => arenas.oldEveryMatch(r.op)), oldQueued = queue.filter((q) => q.op && arenas.oldEveryMatch(q.op));
+  if (!old.length && !oldQueued.length) return '';
+  for (const q of oldQueued) engine.unqueue(q.key);
+  for (const r of old) await engine.revert(r.key);
+  arenaList = null;
+  return `"Same arena every match" disconnected online matches (Rocket League checks each arena file), so your ${old.length} arena files are ${running ? 'put back when Rocket League closes' : 'back to normal'}. It is now "Same stadium every match", which works online: turn it on again in Map Merge.`;
 }
 
 function snapshot() {
@@ -513,7 +518,7 @@ const api = {
     }
     return arenaList;
   },
-  // The arenas for "same arena every match" and "add snow": merged arenas first, under
+  // The arenas for "same stadium every match" and "add snow": merged arenas first, under
   // the name of their merge, then the rest. Snow options say how the snow is made.
   arenaChoices() {
     const list = api.arenas(), changes = arenaChanges();
@@ -524,9 +529,8 @@ const api = {
     // per arena: how many files every match replaces, and the disk space those take (the
     // originals are kept as backups, so that is what it adds)
     const every = all.filter((c) => c.arena.standard).map((c) => {
-      const plan = everyPlan(c.arena, list, changes), files = plan.ops.length;
-      const size = plan.locked.length ? 0 : everyFileSize(c.arena, list, changes);
-      return { id: c.arena.id, label: c.label, merged: c.merged, files, bytes: files * size, skipped: plan.skipped, locked: arenas.lockedMessage(plan.locked) };
+      const plan = everyPlan(c.arena, list, changes);
+      return { id: c.arena.id, label: c.label, merged: c.merged, stadium: plan.stadium.name, files: plan.targets.length, bytes: plan.locked.length ? 0 : plan.bytes, skipped: plan.skipped, single: plan.single, locked: arenas.lockedMessage(plan.locked) };
     });
     const snow = [], noSnow = [];
     for (const c of all.filter((x) => x.arena.playable)) {
@@ -537,23 +541,48 @@ const api = {
     }
     return { every, everyStale: everyMatchStale(list, changes), snow, noSnow };
   },
-  // Same arena every match: one copy per standard arena, applied (or queued) one by one.
+  // Same stadium every match: the chosen stadium merged into every standard arena, each keeping its
+  // own main file so online matches work (arenas.js). Both maps of every pair are read, as Merge does.
   async everyMatch(id) {
     const list = api.arenas(), chosen = list.find((a) => a.id === id);
     if (!chosen) throw new Error('Arena not found');
-    const changes = arenaChanges();
-    const { ops, skipped, locked } = everyPlan(chosen, list, changes);
-    if (locked.length) throw new Error(arenas.lockedMessage(locked));
-    // an arena chosen before: files the new choice does not write go back, so none keeps the old
-    // one; the others are written over (their backup stays the original)
+    // what was written before goes first: a change to the chosen stadium changes every file
     for (const q of engine.list().queue) if (q.op && q.op.group === 'everymatch') engine.unqueue(q.key);
-    for (const rec of engine.list().active) if (rec.op.group === 'everymatch' && !ops.some((o) => o.gameFile.toLowerCase() === rec.key)) await engine.revert(rec.key);
+    for (const rec of engine.list().active) if (rec.op.group === 'everymatch') await engine.revert(rec.key);
+    const changes = arenaChanges();
+    const plan = everyPlan(chosen, list, changes);
+    if (plan.locked.length) throw new Error(arenas.lockedMessage(plan.locked));
+    // the stadium's maps are read once; each arena's while it is worked out
+    const opened = new Map();
+    const stadiumFiles = new Set([plan.stadium.file, ...plan.stadium.parts.map((p) => p.file)].map((f) => f.toLowerCase()));
+    const open = (file) => {
+      const key = file.toLowerCase();
+      if (!opened.has(key)) {
+        let pkg = null;
+        try { pkg = mapbuild.open(fs.readFileSync(engine.pristine(file)), extraKeys); } catch { /* unreadable: left out */ }
+        opened.set(key, pkg);
+      }
+      return opened.get(key);
+    };
+    const ops = [];
+    for (const [i, place] of plan.targets.entries()) {
+      const info = arenas.mergeInfo(plan.stadium, place, open, mapbuild);
+      ops.push(...arenas.everyMatchOps(chosen, place, list, changes, plan.label, info));
+      for (const key of [...opened.keys()]) if (!stadiumFiles.has(key)) opened.delete(key);
+      send('progress', { what: 'every', done: i + 1, total: plan.targets.length * 2, step: 'Reading arenas' });
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    opened.clear();
+    // written in an order that builds each stadium piece once (the same piece goes into every arena),
+    // with each arena's main file last, so it never points at a file that is not there yet
+    const order = (op) => (op.create ? (op.side === 'stadium' ? 0 : 1) : 2);
+    ops.sort((a, b) => order(a) - order(b) || String(a.from).localeCompare(String(b.from)));
     let queued = false;
     for (const [i, op] of ops.entries()) {
       queued = (await engine.apply(op)).queued || queued;
-      send('progress', { what: 'every', done: i + 1, total: ops.length });
+      send('progress', { what: 'every', done: plan.targets.length + Math.round(((i + 1) / ops.length) * plan.targets.length), total: plan.targets.length * 2 });
     }
-    return { queued, skipped, state: snapshot() };
+    return { queued, skipped: plan.skipped, arenas: plan.targets.length, state: snapshot() };
   },
   async everyMatchOff() {
     for (const q of engine.list().queue) if (q.op && q.op.group === 'everymatch') engine.unqueue(q.key);
@@ -567,7 +596,7 @@ const api = {
     const plan = arenas.mergePlan(stadium, place, list);
     // files it would have to read that the keys OpenW has cannot open: said before Merge is pressed
     const locked = plan.how === 'none' ? [] : arenas.lockedFor(list, [stadium, place], plan.ops);
-    return { how: plan.how, reason: plan.reason, note: plan.note, files: plan.ops ? plan.ops.length : 0, play: (plan.play || []).map((a) => a.name), locked, lockedText: arenas.lockedMessage(locked) };
+    return { how: plan.how, reason: plan.reason, note: plan.note, files: plan.ops ? plan.ops.length : 0, play: (plan.play || []).map((a) => a.name), online: plan.online !== false, locked, lockedText: arenas.lockedMessage(locked) };
   },
   async mergeArenas(stadiumId, placeId) {
     const list = api.arenas(), find = (id) => list.find((a) => a.id === id);
@@ -632,7 +661,8 @@ const api = {
     if (!preset) throw new Error('Preset not found');
     await engine.revertAll();
     const errors = [];
-    for (const op of preset.ops.filter((o) => o.kind !== 'hide')) {
+    // (every match as written before 0.4.11 disconnected online matches: never brought back)
+    for (const op of preset.ops.filter((o) => o.kind !== 'hide' && !arenas.oldEveryMatch(o))) {
       try { await engine.apply(op); } catch (e) { errors.push(`${op.label || op.gameFile || op.sourceFile}: ${e.message}`); }
     }
     try { await syncHides(); } catch (e) { errors.push(e.message); }
@@ -856,7 +886,7 @@ async function poll() {
     // anything an older version wrote with the wrong key is rebuilt as soon as the game closes
     const repaired = engine.repairKeys();
     if (repaired.length) notice = `Rebuilt ${repaired.length === 1 ? 'a change' : `${repaired.length} changes`} that an earlier version wrote incorrectly: ${repaired.join(', ')}.`;
-    notice = [notice, await upgradeSwaps()].filter(Boolean).join(' ');
+    notice = [notice, await upgradeSwaps(), await retireOldEveryMatch()].filter(Boolean).join(' ');
   }
   send('state', { state: snapshot(), flushed, notice });
 }
@@ -936,6 +966,8 @@ app.whenReady().then(async () => {
   if (installed && !smokeShot) {
     if (!running) upgraded = await upgradeSwaps();
     else syncHides().catch((e) => logError('hide', e));
+    // (while the game runs, the old every-match files are put back as soon as it closes)
+    try { upgraded = [upgraded, await retireOldEveryMatch()].filter(Boolean).join(' '); } catch (e) { logError('every match', e); }
   }
 
   protocol.handle('thumb', (request) => {

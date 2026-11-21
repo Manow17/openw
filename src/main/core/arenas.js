@@ -184,7 +184,8 @@ function mergePlan(stadium, place, all = [], info = null) {
     const left = sources.length - assigned.size;
     const note = [quiet ? `${place.name}’s background sounds make room for the stadium, so they are quiet.` : '',
       left > 0 ? `Part of ${stadium.name}’s stadium did not fit and is left out.` : ''].filter(Boolean).join(' ');
-    return { how: 'build', ops, play: [place], note, files: ops.length };
+    // the place's main file stays its own (same id and object numbering), so online matches work
+    return { how: 'build', ops, play: [place], note, files: ops.length, online: true };
   }
 
   // no slot in place: the stadium arena's map is the base, place's outside loads in its parts
@@ -207,7 +208,9 @@ function mergePlan(stadium, place, all = [], info = null) {
   });
   ops.push({ ...stadiumOf(stadium.file), gameFile: place.file, gameplay: true, lights: true, part: false, renames });
   return {
-    how: 'build', ops, play: [place], files: ops.length,
+    // the place's main file becomes the other arena's map: Rocket League checks each arena file
+    // against the server online ("version mismatch"), so this one is for offline matches
+    how: 'build', ops, play: [place], files: ops.length, online: false,
     note: `${place.name} has no stadium or sound file to load ${stadium.name}’s stadium in, so ${stadium.name}’s map is used with ${place.name}’s outside and sky around it; its light and fog are ${stadium.name}’s.`,
   };
 }
@@ -292,33 +295,61 @@ function mergedArenas(arenas, changes) {
   return [...out.values()];
 }
 
-// "Same arena every match": every standard arena file becomes a copy of what `chosen`
-// really loads (for a whole-arena merge, the arena merged in). Whatever arena the game
-// picks, it loads that. The pitch is the same size in all standard arenas, so the ball and
-// walls still line up. Arena files you changed yourself (a merge, snow) are left as they are.
-function everyMatchOps(chosen, arenas, changes = new Map(), label = chosen.name) {
-  if (!chosen.standard) throw new Error('Pick a standard soccar arena');
-  const source = effectiveArena(chosen, arenas, changes).file;
-  const own = (a) => { const op = changes.get(a.file.toLowerCase()); return op && op.group !== 'everymatch'; };
-  // a built merge is built again in each arena's place (its added files are shared); a copy of the
-  // original main file would lose it
-  const built = changes.get(chosen.file.toLowerCase());
-  const make = built && built.kind === 'build' && built.group !== 'everymatch'
-    ? (a) => ({ kind: 'build', gameFile: a.file, from: built.from, side: built.side, renames: built.renames, region: built.region, clear: built.clear, gameplay: built.gameplay, lights: built.lights, part: built.part })
-    : (a) => ({ kind: 'copy', gameFile: a.file, sourceGameFile: source });
-  return arenas.filter((a) => a.standard && a.id !== chosen.id && a.file.toLowerCase() !== source.toLowerCase() && !own(a)).map((a) => ({
-    ...make(a), category: 'map', group: 'everymatch', chosen: chosen.id, label: `${label} in place of ${a.name}`,
-  }));
+/* ---------- same stadium every match ----------
+ * Until 0.4.11 every match made each arena file a copy of the chosen arena. Rocket League checks each
+ * arena file against the server online (its package id, and how it numbers the objects the match
+ * keeps in step), so every online match in a replaced arena ended with "version mismatch". Now the
+ * chosen stadium is merged into every arena the way Merge does it: each arena keeps its own main
+ * file (same id, same numbering), with its stadium hidden and its stadium or sound part loading the
+ * chosen stadium. Its surroundings and sky stay its own. */
+
+// The arena whose stadium every match shows for `chosen`: the stadium of its merge when chosen is a
+// merged arena, otherwise the arena chosen really loads.
+function everyStadium(chosen, arenas, changes = new Map()) {
+  const merge = mergedArenas(arenas, changes).find((m) => m.arena.id === chosen.id);
+  const id = merge && merge.group && /^merge:([^:]+):/.exec(merge.group);
+  return (id && arenas.find((a) => a.id === id[1])) || effectiveArena(chosen, arenas, changes);
 }
 
-// Whether two sets of every-match ops write the same files in the same way. Every match is out
-// of date when what it wrote is not what it would write now (a merge made, changed or reverted).
-function sameEveryMatch(a, b) {
-  const sig = (o) => JSON.stringify([o.gameFile.toLowerCase(), o.kind, o.sourceGameFile || null, o.from || null, o.side || null,
-    o.renames || null, o.region || null, o.clear || null, !!o.gameplay, !!o.lights, !!o.part]);
-  const x = a.map(sig).sort(), y = b.map(sig).sort();
-  return x.length === y.length && x.every((s, i) => s === y[i]);
+// The arenas every match changes (targets) and those it leaves as they are (skipped, with why).
+// Arenas you merged or snowed yourself keep your change, so they are neither.
+function everyMatchTargets(chosen, arenas, changes = new Map()) {
+  if (!chosen.standard) throw new Error('Pick a standard soccar arena');
+  const stadium = everyStadium(chosen, arenas, changes);
+  const own = (a) => { const op = changes.get(a.file.toLowerCase()); return !!op && op.group !== 'everymatch'; };
+  const targets = [], skipped = [];
+  for (const a of arenas) {
+    if (!a.standard || a.id === chosen.id || a.id === stadium.id || own(a)) continue;
+    // one file with no stadium or sound part: nothing to load another stadium into without
+    // replacing its main file, which online matches refuse
+    if (!a.parts.some((p) => p.kind === 'field' || p.kind === 'audio')) skipped.push({ arena: a, why: 'single' });
+    else targets.push(a);
+  }
+  return { stadium, targets, skipped };
 }
+
+// The ops that put the chosen stadium into one arena: Merge's own, tagged as every match.
+// info: what mergeInfo read from the two maps (without it, a best guess for display).
+function everyMatchOps(chosen, place, arenas, changes = new Map(), label = chosen.name, info = null) {
+  const stadium = everyStadium(chosen, arenas, changes);
+  const plan = mergePlan(stadium, place, arenas, info);
+  if (plan.how !== 'build' || !plan.online) return [];
+  return plan.ops.map((op) => ({ ...op, group: 'everymatch', chosen: chosen.id, stadium: stadium.id, place: place.id, every: label, label: `${stadium.name} stadium in ${place.name}, every match` }));
+}
+
+// Whether what every match wrote (its ops) is what it would write now: the same chosen arena and
+// stadium, in the same arenas. Out of date when a merge was made, changed or reverted meanwhile, or
+// when it was written the old way (a copy of the arena: no place recorded).
+function sameEveryMatch(on, chosen, arenas, changes = new Map()) {
+  if (!on.length || on.some((o) => !o.place)) return false;
+  const { stadium, targets } = everyMatchTargets(chosen, arenas, changes);
+  const places = new Set(on.map((o) => o.place));
+  return on.every((o) => o.chosen === chosen.id && o.stadium === stadium.id) && places.size === targets.length && targets.every((t) => places.has(t.id));
+}
+
+// Every-match changes written before 0.4.11 (a copy of another arena over each arena file):
+// they break online matches and are put back.
+const oldEveryMatch = (op) => !!op && op.group === 'everymatch' && !op.place;
 
 /**
  * Snow for an arena, merged or not. Falling snow only exists inside the game's four snowy
@@ -339,7 +370,8 @@ function snowPlan(arena, arenas, changes = new Map()) {
   if (!snowy || snowy.id === eff.id) return null; // no snowy version, or already it
   const op = { kind: 'copy', gameFile: arena.file, sourceGameFile: snowy.file, category: 'map', label: `Snow on ${arena.name}` };
   if (merge) Object.assign(op, { group: merge.group, label: `${merge.label}, snowy` }); // stays part of its merge
-  return { how: 'version', op, play: [arena], snowy: snowy.name };
+  // the arena file becomes the snowy arena's: online matches in this arena check it and refuse it
+  return { how: 'version', op, play: [arena], snowy: snowy.name, online: false };
 }
 
-module.exports = { scanArenas, arenaName, partKind, mergePlan, mergeInfo, outsideParts, arenasUsing, everyMatchOps, sameEveryMatch, effectiveArena, mergedArenas, snowPlan, opReads, lockedFiles, lockedFor, lockedMessage };
+module.exports = { scanArenas, arenaName, partKind, mergePlan, mergeInfo, outsideParts, arenasUsing, everyStadium, everyMatchTargets, everyMatchOps, sameEveryMatch, oldEveryMatch, effectiveArena, mergedArenas, snowPlan, opReads, lockedFiles, lockedFor, lockedMessage };

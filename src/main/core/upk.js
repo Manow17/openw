@@ -38,7 +38,8 @@ function parseSummary(buf) {
     const importCount = i32(), importOffset = i32();
     const dependsOffset = i32();
     skip(16); // import/export guid offsets + counts, thumbnail table offset
-    skip(16); // package guid
+    const guidOffset = o;
+    skip(16); // package guid: the game checks it online against the server's (see packageGuid)
     skip(i32() * 12); // generations
     skip(12); // engine version, cooker version, compression flags
     skip(i32() * 16); // compressed chunks (unused by the game's own format)
@@ -49,7 +50,7 @@ function parseSummary(buf) {
     return {
       fileVersion, licenseeVersion, totalHeaderSize, nameCount, nameOffset, exportCount,
       exportOffset, importCount, importOffset, dependsOffset, garbageSize, chunkInfoOffset,
-      lastBlockSize, summaryEnd: o,
+      lastBlockSize, guidOffset, summaryEnd: o,
     };
   } catch (e) {
     if (e instanceof UpkError) throw e;
