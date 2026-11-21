@@ -153,9 +153,17 @@ function readPackageFile(file, extraKeys) {
 function renameNames(buf, renames, extraKeys = [], outputKey = null) {
   const pkg = readPackage(buf, extraKeys);
   const plain = Buffer.from(pkg.plain);
+  const { renamed, missing } = renameIn(plain, pkg.names, renames);
+  const out = Buffer.from(buf);
+  aes('enc', outputKey || pkg.key, plain).copy(out, pkg.range.start);
+  return { buffer: out, renamed, missing };
+}
+
+// The renames of renameNames, written into a decrypted header block.
+function renameIn(plain, names, renames) {
   const renamed = [], missing = [];
   for (const { from, to } of renames) {
-    const hits = pkg.names.filter((n) => n.text.toLowerCase() === from.toLowerCase());
+    const hits = names.filter((n) => n.text.toLowerCase() === from.toLowerCase());
     if (!hits.length) { missing.push(from); continue; }
     for (const n of hits) {
       if (n.wide || !/^[\x20-\x7e]+$/.test(to)) throw new UpkError('BAD_NAME', `Cannot rename "${from}"`);
@@ -167,9 +175,51 @@ function renameNames(buf, renames, extraKeys = [], outputKey = null) {
       renamed.push({ from: n.text, to });
     }
   }
+  return { renamed, missing };
+}
+
+/* ----- the import and export tables, read and edited in place -----
+ * Import entry (28 bytes): class package, class name (names), outer, object name (index, number).
+ * Export entry (72 bytes + 4 per net object): class, super, outer, object name (index, number),
+ * archetype, flags, serial size and offset, export flags, net objects, guid, package flags.
+ * An object's name is a name-table entry plus a number (n > 0 reads as "<name>_<n-1>"). An
+ * object reference is an export (index + 1) or an import (-(index + 1)); 0 is none. */
+function headerTables(pkg) {
+  const { summary: s, plain } = pkg;
+  const names = pkg.names.map((n) => n.text);
+  const imports = [], exports = [];
+  let p = s.importOffset - s.nameOffset;
+  for (let i = 0; i < s.importCount; i++, p += 28) {
+    imports.push({ at: p, outer: plain.readInt32LE(p + 16), name: plain.readInt32LE(p + 20), num: plain.readInt32LE(p + 24) });
+  }
+  p = s.exportOffset - s.nameOffset;
+  for (let i = 0; i < s.exportCount; i++) {
+    exports.push({ at: p, cls: plain.readInt32LE(p), outer: plain.readInt32LE(p + 8), name: plain.readInt32LE(p + 12), num: plain.readInt32LE(p + 16) });
+    p += 72 + plain.readInt32LE(p + 48) * 4;
+  }
+  const text = (e) => (names[e.name] || '?') + (e.num ? `_${e.num - 1}` : '');
+  const entry = (ref) => (ref < 0 ? imports[-ref - 1] : ref > 0 ? exports[ref - 1] : null);
+  // "WHEEL_Star.WHEEL_Star" as ['WHEEL_Star', 'WHEEL_Star']
+  const pathOf = (ref) => {
+    const parts = [];
+    for (let k = 0; ref && k < 64; k++) { const e = entry(ref); if (!e) break; parts.unshift(text(e)); ref = e.outer; }
+    return parts;
+  };
+  const key = (parts) => parts.join('.').toLowerCase();
+  // the export at a path (case does not matter), or -1
+  const findExport = (parts) => { const want = key(parts); return exports.findIndex((e, i) => key(pathOf(i + 1)) === want); };
+  return { names, imports, exports, text, pathOf, findExport, key };
+}
+
+// Edit a package's decrypted header with edit(plain, tables, pkg) and encrypt it again, with
+// outputKey or its own key. Only the header changes: the file keeps its size and its chunks.
+function editHeader(buf, extraKeys, outputKey, edit) {
+  const pkg = readPackage(buf, extraKeys);
+  const plain = Buffer.from(pkg.plain);
+  const result = edit(plain, headerTables({ ...pkg, plain }), pkg);
   const out = Buffer.from(buf);
   aes('enc', outputKey || pkg.key, plain).copy(out, pkg.range.start);
-  return { buffer: out, renamed, missing };
+  return { buffer: out, result };
 }
 
 // The same package, its header encrypted with `key` instead of its own.
@@ -295,6 +345,6 @@ function baseName(fileName) {
 }
 
 module.exports = {
-  UpkError, DEFAULT_KEYS, parseSummary, readPackage, readPackageFile, renameNames, baseName,
+  UpkError, DEFAULT_KEYS, parseSummary, readPackage, readPackageFile, renameNames, renameIn, headerTables, editHeader, baseName,
   probeFile, parseKeys, readHeaderFile, readNamesFile, keyOfFile, reencrypt, readTables, inflateChunk, readObject, aes,
 };

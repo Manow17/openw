@@ -384,13 +384,9 @@ function picture(item, glyph, cls = '') {
   return box;
 }
 
-// Can the item you own take this look? Mirrors canSwap() in core/catalog.js.
-const canSwap = (source, target) => source.id !== target.id && target.ok && source.len <= target.len;
-const whyNot = (source, target) => {
-  if (!target.ok) return 'This look uses a newer package key that OpenW cannot read.';
-  if (source.len > target.len) return 'Not supported yet: this look has a shorter internal name than your item.';
-  return 'Pick two different items.';
-};
+// Can the item you own take this look? The same check as the main process (shared/swap.js).
+const canSwap = (source, target) => !window.OpenWSwap.swapProblem(source, target);
+const whyNot = (source, target, code) => window.OpenWSwap.WHY[window.OpenWSwap.swapProblem(source, target) || window.OpenWSwap.CODES[code]] || '';
 
 const views = {};
 let popGrid = false; // animate the item grid on the next render (category change)
@@ -423,8 +419,9 @@ views.garage = () => {
     else if (queued) status = h('span', { class: 'tag on' }, 'Queued: close Rocket League to apply');
     else if (!ui.dst) status = h('span', { class: 'muted' }, applied ? 'This item is swapped. Pick a look to change it.' : 'Now pick its new look');
     else if (!ui.check) status = h('span', { class: 'muted' }, 'Checking…');
-    else if (!ready) status = h('span', { style: 'color:var(--bad)' }, ['NAME_TOO_LONG', 'NO_KEY'].includes(ui.check.code) ? whyNot(ui.src, ui.dst) : ui.check.message);
+    else if (!ready) status = h('span', { style: 'color:var(--bad)' }, whyNot(ui.src, ui.dst, ui.check.code) || ui.check.message);
     else if (S.running) status = h('span', { class: 'muted' }, 'Rocket League is open. The swap waits until you close it.');
+    else if (ui.src.early) status = h('span', { class: 'muted' }, `Ready. ${ui.src.label} is a default item the game loads early (${ui.src.early.join(', ')}), so OpenW also renames that early copy and the game reads your swap.`);
     else if (ui.cat === 'cars' || ui.cat === 'explosions') status = h('span', { class: 'muted' }, 'Ready. Other tools report that car and goal explosion swaps can crash the game.');
     else status = h('span', { class: 'tag on' }, 'Ready');
     bar.replaceChildren(
@@ -508,9 +505,12 @@ views.garage = () => {
   const applied = changes.length ? tile('s12 applied', h('h3', {}, 'In your game'),
     changes.map(({ q, r, op }) => {
       const label = op ? (op.label || op.gameFile) : q.key;
+      const src = op && op.kind === 'swap' && catalog.byId.get(op.sourceFile.toLowerCase());
       return h('div', { class: 'change' },
         op && op.kind === 'swap' ? picture(catalog.byId.get(op.targetFile.toLowerCase()), op.category, 'sm') : art(label, op ? op.category : 'packs'),
-        h('span', { class: 'clip' }, label), q && h('span', { class: 'tag' }, q.type === 'apply' ? 'Queued' : 'Revert queued'),
+        h('span', { class: 'clip', title: src && src.early ? `A default item: its early copy in ${src.early.join(' and ')} is renamed too, so the game reads the swap. Reverting puts that back as well.` : null }, label),
+        src && src.early && h('span', { class: 'tag' }, 'Default item'),
+        q && h('span', { class: 'tag' }, q.type === 'apply' ? 'Queued' : 'Revert queued'),
         q ? h('button', { class: 'btn sm', onclick: () => run(() => api('unqueue', q.key)) }, 'Cancel')
           : h('button', { class: 'btn sm', onclick: () => run(() => api('revert', r.key), S.running ? 'Revert queued until the game closes.' : 'Original file restored.') }, 'Revert'));
     }),

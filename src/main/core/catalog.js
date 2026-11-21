@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const upk = require('./upk');
+const { swapProblem } = require('../../shared/swap');
 
 // file-name prefix -> category
 const PREFIXES = {
@@ -89,9 +90,10 @@ function annotate(cookedDir, items, cache = {}, skip = new Set(), extraKeys = []
 }
 
 // Can `source` (the item you own) take the look of `target`? The rename is done in
-// place, so the source's internal name must fit in the target's.
+// place, so the source's internal name must fit in the target's; the look must be able to go
+// where the game looks for the source's (shared/swap.js).
 function canSwap(source, target) {
-  return source.id !== target.id && target.ok && source.len <= target.len;
+  return !swapProblem(source, target);
 }
 
 module.exports = { CATEGORIES, buildCatalog, annotate, canSwap, prettify };

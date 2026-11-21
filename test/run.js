@@ -207,6 +207,137 @@ function makeEngine(cooked, running = { value: false }) {
     assert.ok(!fs.existsSync(path.join(data, 'backups', shortF.toLowerCase())));
   }, !real);
 
+  /* ---------- item swaps that show in game (core/looks.js) ---------- */
+  const looks = require('../src/main/core/looks');
+  const { swapProblem } = require('../src/shared/swap');
+
+  test('swaps: which looks an item can take, from where the game finds each look', () => {
+    const it = (id, path, len = path[0].length, extra = {}) => ({ id, path, len, ok: true, ...extra });
+    const star = it('wheel_star', ['WHEEL_Star', 'WHEEL_Star']);
+    const alpha = it('wheel_alpharim', ['WHEEL_AlphaRim', 'WHEEL_AlphaRim']);
+    const grouped = it('boost_bloodshot', ['boost_bloodshot', 'FX', 'boost_bloodshot']);
+    const tier = it('boost_anime', ['boost_anime', 'boost_anime_tier1']);
+    const tier2 = it('boost_comet', ['boost_comet', 'boost_comet_tier1']);
+    assert.strictEqual(swapProblem(star, alpha), '');
+    assert.strictEqual(swapProblem(star, grouped), '', 'a look kept in a group is moved to where the game looks');
+    assert.strictEqual(swapProblem(alpha, star), 'long', 'the internal name has to fit');
+    const standard = it('boost_standard', ['Boost_Standard', 'Boost_Standard']);
+    assert.strictEqual(swapProblem(tier, standard), 'tiered', 'a tier needs a look with its own name to rename');
+    assert.strictEqual(swapProblem(tier, tier2), '');
+    assert.strictEqual(swapProblem(star, { ...alpha, ok: false }), 'key');
+    assert.strictEqual(swapProblem({ ...star, stuck: 'TAGame.upk' }, alpha), 'stuck');
+    assert.strictEqual(swapProblem(star, star), 'same');
+    assert.ok(canSwap(star, alpha) && !canSwap(tier, standard));
+    // without the item list a look is at <package>.<package>
+    assert.deepStrictEqual(looks.assetPath({}, 'WHEEL_Star_SF.upk'), ['WHEEL_Star', 'WHEEL_Star']);
+    const products = { boost_anime: [['boost_anime_tier2', 'boost_anime.boost_anime_tier2'], ['boost_anime_tier1', 'boost_anime.boost_anime_tier1']], wheel_star: [['wheel_star_holo', 'WHEEL_Star.WHEEL_Star'], ['WHEEL_Star', 'WHEEL_Star.WHEEL_Star']] };
+    assert.deepStrictEqual(looks.assetPath(products, 'boost_anime_SF.upk'), ['boost_anime', 'boost_anime_tier1']);
+    assert.deepStrictEqual(looks.assetPath(products, 'WHEEL_Star_SF.upk'), ['WHEEL_Star', 'WHEEL_Star']);
+  });
+
+  test('swaps: the new look is put exactly where the game looks for the item, also when it is kept in a group', () => {
+    const products = looks.readProducts(real, []);
+    assert.ok(Object.keys(products).length > 5000, 'the item list is read from TAGame.upk');
+    const ap = (f) => looks.assetPath(products, f);
+    assert.deepStrictEqual(ap('WHEEL_Star_SF.upk'), ['WHEEL_Star', 'WHEEL_Star']);
+    const keyOf = (f) => upk.keyOfFile(path.join(real, f), []);
+    const backups = path.join(process.env.APPDATA || '', 'OpenW', 'backups');
+    const original = (f) => (fs.existsSync(path.join(backups, f.toLowerCase())) ? path.join(backups, f.toLowerCase()) : path.join(real, f));
+    const swapped = (src, tgt) => {
+      const buf = fs.readFileSync(original(tgt));
+      const out = looks.swapLook(buf, ap(src), ap(tgt), [], keyOf(src));
+      assert.strictEqual(out.length, buf.length, 'header only: the file keeps its size');
+      const T = upk.headerTables(upk.readPackage(out, []));
+      const at = T.findExport(ap(src));
+      assert.ok(at >= 0, `${src} <- ${tgt}: no object at ${ap(src).join('.')}`);
+      return { T, at };
+    };
+    // the user's swap: OEM wheels with the look of Goldstone
+    if (fs.existsSync(path.join(real, 'WHEEL_AlphaRim_SF.upk'))) {
+      const { T } = swapped('WHEEL_Star_SF.upk', 'WHEEL_AlphaRim_SF.upk');
+      assert.ok(T.findExport(['WHEEL_Star', 'WHEEL_AlphaRim_SM']) >= 0, 'with the Goldstone mesh');
+    }
+    // a look kept in a group ("<pkg>.FX.<pkg>") is moved up to "<pkg>.<pkg>", and the other way round
+    const items = buildCatalog(real).items;
+    const readable = (i) => upk.probeFile(path.join(real, i.file), []);
+    const groupedT = items.find((i) => ap(i.file).length === 3 && i.category === 'boosts' && readable(i));
+    const plainS = groupedT && items.find((i) => i.category === 'boosts' && ap(i.file).length === 2 && i.len <= groupedT.len && readable(i) && !/_T$/i.test(i.file));
+    if (groupedT && plainS) {
+      const { T, at } = swapped(plainS.file, groupedT.file);
+      assert.strictEqual(T.exports[at].outer, T.findExport([ap(plainS.file)[0]]) + 1, 'straight under the package');
+    }
+    // a pair that cannot work is refused with a reason, not written so it never shows
+    const tiered = items.find((i) => { const p = ap(i.file); return p.length === 2 && p[1].toLowerCase() !== p[0].toLowerCase() && readable(i); });
+    const simple = tiered && items.find((i) => i.category === tiered.category && ap(i.file)[0].length >= tiered.len && ap(i.file).length === 2 && ap(i.file)[0].toLowerCase() === ap(i.file)[1].toLowerCase() && readable(i));
+    if (tiered && simple) assert.throws(() => looks.swapLook(fs.readFileSync(path.join(real, simple.file)), ap(tiered.file), ap(simple.file), []), (e) => e.code === 'TIERED');
+  }, !real);
+
+  test('swaps: default items the game loads early (OEM wheels, Standard boost) get that copy renamed, and it reverts exactly', async () => {
+    const products = looks.readProducts(real, []);
+    const want = new Set(Object.values(products).flat().map(([, p]) => p.toLowerCase()));
+    const backups = path.join(process.env.APPDATA || '', 'OpenW', 'backups');
+    const original = (f) => (fs.existsSync(path.join(backups, f.toLowerCase())) ? path.join(backups, f.toLowerCase()) : path.join(real, f));
+    const scan = looks.scanEarly(real, want, [], original);
+    // the OEM wheel is in Startup.upk, which the game always has loaded; the menu's intro scenes point to it
+    const star = scan['wheel_star.wheel_star'];
+    assert.ok(star && star.exports.includes('Startup.upk'), 'OEM wheels are copied into Startup.upk');
+    const ops = looks.hideOps([['WHEEL_Star', 'WHEEL_Star'], ['Boost_Standard', 'Boost_Standard'], ['WHEEL_AlphaRim', 'WHEEL_AlphaRim']], scan);
+    const startup = ops.find((o) => o.gameFile === 'Startup.upk');
+    assert.ok(startup && startup.paths.includes('wheel_star.wheel_star'));
+    for (const f of star.imports) assert.ok(ops.some((o) => o.gameFile === f && o.paths.includes('wheel_star.wheel_star')), `${f} keeps finding the early copy`);
+    if (scan['boost_standard.boost_standard']) assert.ok(ops.some((o) => o.paths.includes('boost_standard.boost_standard')), 'the Standard boost is copied into a menu scene');
+    assert.ok(!ops.some((o) => o.paths.includes('wheel_alpharim.wheel_alpharim')), 'an item no early package carries needs nothing');
+    // what changes: only that one object's name in Startup.upk; the rest of the OEM wheel stays
+    const dir = fs.mkdtempSync(path.join(tmp, 'early-'));
+    fs.copyFileSync(original('Startup.upk'), path.join(dir, 'Startup.upk'));
+    const before = sha(path.join(dir, 'Startup.upk'));
+    const { engine, data } = makeEngine(dir);
+    await engine.apply(startup);
+    const T = upk.headerTables(upk.readPackageFile(path.join(dir, 'Startup.upk')));
+    assert.strictEqual(T.findExport(['WHEEL_Star', 'WHEEL_Star']), -1, 'the game no longer finds the early copy');
+    assert.ok(T.findExport(['WHEEL_Star', `WHEEL_Star_${looks.HIDE_NUMBER - 1}`]) >= 0);
+    assert.ok(T.findExport(['WHEEL_Star', 'OEM_Combined_RGB']) >= 0, 'textures other wheels use stay');
+    assert.strictEqual(fs.statSync(path.join(dir, 'Startup.upk')).size, fs.statSync(original('Startup.upk')).size);
+    await engine.revert('startup.upk');
+    assert.strictEqual(sha(path.join(dir, 'Startup.upk')), before);
+    assert.ok(!fs.existsSync(path.join(data, 'backups', 'startup.upk')));
+  }, !real);
+
+  test('swaps: the early copies follow the swaps that are on or queued', () => {
+    const scan = {
+      'wheel_star.wheel_star': { exports: ['Startup.upk'], imports: ['MENU_X.upk'], untouchable: [] },
+      'boost_standard.boost_standard': { exports: ['NUE_X.upk'], imports: ['MENU_Y.upk'], untouchable: [] },
+    };
+    const ap = (f) => { const b = upk.baseName(f); return [b, b]; };
+    const swap = (src) => ({ kind: 'swap', sourceFile: src, targetFile: 'x_SF.upk' });
+    const rec = (key, op) => ({ key, op });
+    // nothing yet: Startup and the scene that points to it get the wheel; the boost's scene only its own
+    let plan = looks.planHides({ active: [rec('wheel_star_sf.upk', swap('WHEEL_Star_SF.upk')), rec('boost_standard_sf.upk', swap('Boost_Standard_SF.upk'))], queue: [] }, ap, scan);
+    assert.deepStrictEqual(plan.apply.map((o) => [o.gameFile, o.paths]), [['MENU_X.upk', ['wheel_star.wheel_star']], ['NUE_X.upk', ['boost_standard.boost_standard']], ['Startup.upk', ['wheel_star.wheel_star']]]);
+    assert.ok(!plan.apply.some((o) => o.gameFile === 'MENU_Y.upk'), 'a copy only its own scene loads: what points to it is left alone');
+    // already right: nothing to do
+    const hides = plan.apply.map((o) => rec(o.gameFile.toLowerCase(), o));
+    plan = looks.planHides({ active: [rec('wheel_star_sf.upk', swap('WHEEL_Star_SF.upk')), rec('boost_standard_sf.upk', swap('Boost_Standard_SF.upk')), ...hides], queue: [] }, ap, scan);
+    assert.deepStrictEqual(plan, { apply: [], revert: [], unqueue: [] });
+    // the wheel swap reverted (queued while the game runs): its early copies go back too
+    plan = looks.planHides({ active: [rec('wheel_star_sf.upk', swap('WHEEL_Star_SF.upk')), rec('boost_standard_sf.upk', swap('Boost_Standard_SF.upk')), ...hides], queue: [{ key: 'wheel_star_sf.upk', type: 'revert' }] }, ap, scan);
+    assert.deepStrictEqual(plan.revert.sort(), ['menu_x.upk', 'startup.upk']);
+    // a queued hide whose swap is cancelled is taken off the queue
+    plan = looks.planHides({ active: [], queue: [{ key: 'startup.upk', type: 'apply', op: hides.find((h) => h.key === 'startup.upk').op }] }, ap, scan);
+    assert.deepStrictEqual(plan.unqueue, ['startup.upk']);
+  });
+
+  test('swaps from before 0.4.10 are built again once, the way the game reads them', async () => {
+    const { engine } = makeEngine(cooked);
+    await engine.apply({ kind: 'swap', sourceFile: shortF, targetFile: longF });
+    const active = engine.store.get('active');
+    delete active[shortF.toLowerCase()].rev; // as an older version wrote it
+    engine.store.set('active', active);
+    assert.strictEqual(engine.rebuildSwaps().length, 1);
+    assert.strictEqual(engine.rebuildSwaps().length, 0, 'only once');
+    await engine.revert(shortF.toLowerCase());
+  }, !real);
+
   test('changes are queued while the game runs and applied when it closes', async () => {
     const { engine, running } = makeEngine(cooked, { value: true });
     const dest = path.join(cooked, midF);

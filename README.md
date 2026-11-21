@@ -96,6 +96,8 @@ Known limits of item swaps in this version:
 - A swap renames the new look's package to your item's name **in place**, so your item's internal name must not be longer than the new look's (for example Standard boost -> Alpha Reward works, Octane -> Venom does not). On the test machine about half the looks in a category work for a given item. The Garage lists only those once you have picked your item.
 - OpenW ships one decryption key, the long-published community one, which opens roughly two thirds of items. The rest show a lock instead of a picture and cannot be used as a new look. If you have a key list (a `keys.txt`, one key per line in hex or base64, as published by community tools), add it under **Settings -> Item pictures and keys**; on the test machine that raised coverage to about 97%. Key lists are not included in this repository.
 - Other community tools that swap items the same way report that **car body and goal explosion swaps can crash the game**. Treat those two categories as the riskiest.
+- Fixed in 0.4.10: swaps on **default items** (OEM wheels, the Standard boost, Octane, Breakout, Merc and a few more, 21 in all) showed nothing, because the game has those loaded before it ever reads their file (see [How a swap works](#how-a-swap-works)). Swaps of items that keep their look in a group or under a tier name (about 170 items) put the new look where the game never looked. Swaps made with an earlier version are rebuilt the next time OpenW runs with the game closed. **Not checked in game yet.**
+- Two player anthems are kept in the game's own program file (TAGame.upk), which OpenW never changes, so they cannot take another look.
 - Item names come from the game's own English text file, which needs a key from a key list. With only the built-in key, items are listed under their internal file names (some cars have code names).
 
 Not implemented: custom paint colours, 3D garage preview, custom balls and sounds, stadium colours, and changing your name, title or rank **inside** the game. The last one would need code injected into the running game, which OpenW does not do.
@@ -162,12 +164,17 @@ It presses keys and moves the mouse in the game window, so run it when nobody is
 
 ## How a swap works
 
-Each item is a package file such as `WHEEL_Star_SF.upk` whose contents answer to the name `WHEEL_Star`. To make item A look like item B, OpenW takes B's package, renames `B` to `A` in its name table, and writes the result over A's file. The rename keeps the exact byte size (shorter names are padded), so nothing else in the file moves and the compressed data is never rewritten. A's original file is copied to OpenW's data folder first.
+Each item is a package file such as `WHEEL_Star_SF.upk` whose contents answer to the name `WHEEL_Star`. The game's item list (in `TAGame.upk`) says where each item's look is inside its package, for example `WHEEL_Star.WHEEL_Star`, `boost_bloodshot.FX.boost_bloodshot` or `boost_anime.boost_anime_tier1`. When the item is used, the game looks that path up among the objects it already has, and only when it is not there reads the item's file.
+
+To make item A look like item B, OpenW takes B's package, renames `B` to `A` in its name table, moves B's look to the path A's look has (straight under the package, or into the same group) and writes the result over A's file. Only the encrypted header changes: names are renamed in place (shorter names are padded) and the look's entry in the export table gets another parent, so nothing else in the file moves and the compressed data is never rewritten. A's original file is copied to OpenW's data folder first. The code is in `src/main/core/looks.js`.
+
+**Default items.** The game has some items loaded before their own file is ever read: the OEM wheels are copied into `Startup.upk`, which is always loaded, and the Standard boost, Octane, Breakout, Merc and a few wheels, decals and paint finishes into the main menu's intro scenes (`NUE_CINE_Master.upk`, `MENU_CarSelect_Intro.upk`). Whichever loaded package has an object first wins, so a swapped file for those items would never be read. For them OpenW also gives that early copy of the look object another number on its name (`WHEEL_Star.WHEEL_Star` becomes `WHEEL_Star.WHEEL_Star_1331100000` in `Startup.upk`): the game then misses it and reads the swapped file. Everything else in those packages stays as it was, including the textures other items use, and the scenes that show the copy refer to it by number, not by name. The menu scenes that point to the copy in `Startup.upk` get the same new number. These files are backed up and put back with the swap.
 
 ## Project layout
 
 ```
 src/main/core/   game.js (find game)  upk.js (package reader/patcher)  engine.js (apply, back up, revert, queue)
+                 looks.js (where the game finds each item's look; swaps and default items)
                  catalog.js (items)   labels.js (item names)   thumbs.js (item pictures)   arenas.js (map merge, snow)
                  library.js (workshop maps)  store.js (settings)
 src/main/        main.js (window, IPC)  preload.js  media.js + media.ps1 (now playing, via Windows)

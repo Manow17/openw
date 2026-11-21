@@ -4,8 +4,12 @@
 //
 // Operations:
 //   { kind: 'swap', sourceFile, targetFile }  the item you own (source) gets the
-//       look of another item (target): target's package, internally renamed to
-//       the source's name, is written over the source file.
+//       look of another item (target): target's package, with its look moved and
+//       renamed to the path the source's product loads (looks.js), is written over
+//       the source file.
+//   { kind: 'hide', gameFile, paths }          an early package (Startup.upk, a menu
+//       scene) that carries a copy of a swapped item's look gets that copy renamed,
+//       so the game reads the swapped file instead (looks.js).
 //   { kind: 'file', gameFile, from }           gameFile is replaced by an
 //       arbitrary file (a workshop map).
 //   { kind: 'copy', gameFile, sourceGameFile } gameFile is replaced by a copy of
@@ -19,6 +23,10 @@ const path = require('path');
 const crypto = require('crypto');
 const upk = require('./upk');
 const mapbuild = require('./mapbuild');
+const looks = require('./looks');
+
+// Swaps written before this way of building them are built again once (rebuildSwaps).
+const SWAP_REV = 2;
 
 class EngineError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -38,8 +46,10 @@ function readable(file, fn) {
 }
 
 class Engine {
-  constructor({ store, backupDir, getCookedDir, isRunning, getKeys = () => [] }) {
-    Object.assign(this, { store, backupDir, getCookedDir, isRunning, getKeys });
+  // getAssetPath(file): where the game finds the look of an item file (looks.assetPath)
+  constructor({ store, backupDir, getCookedDir, isRunning, getKeys = () => [], getAssetPath = null }) {
+    const base = (file) => { const b = upk.baseName(file); return [b, b]; };
+    Object.assign(this, { store, backupDir, getCookedDir, isRunning, getKeys, getAssetPath: getAssetPath || base });
     if (!store.get('active')) store.set('active', {});
     if (!store.get('queue')) store.set('queue', []);
   }
@@ -111,22 +121,29 @@ class Engine {
       const buf = fs.readFileSync(from);
       return key ? readable(op.sourceGameFile, () => upk.reencrypt(buf, key, this.getKeys())) : buf;
     }
+    if (op.kind === 'hide') {
+      if (!Array.isArray(op.paths) || !op.paths.length) throw new EngineError('BAD_OP', 'Nothing to hide');
+      const buf = fs.readFileSync(this.pristine(op.gameFile));
+      return readable(op.gameFile, () => looks.hideLooks(buf, op.paths, this.getKeys()));
+    }
     if (op.kind !== 'swap') throw new EngineError('BAD_OP', `Unknown operation "${op.kind}"`);
     if (op.sourceFile.toLowerCase() === op.targetFile.toLowerCase()) {
       throw new EngineError('SAME_ITEM', 'Pick two different items');
     }
+    if (!op.targetFile || path.basename(op.targetFile) !== op.targetFile) throw new EngineError('BAD_OP', 'Invalid look file name');
     // Always read the target from its pristine copy if we have modified it.
-    const targetPath = this.pristine(op.targetFile);
-    const from = upk.baseName(op.targetFile);
-    const to = this.internalName(op.sourceFile);
-    const res = upk.renameNames(fs.readFileSync(targetPath), [
-      { from, to },
-      { from: `${from}_SF`, to: `${to}_SF` },
-    ], this.getKeys(), this.destinationKey(op.sourceFile));
-    if (res.missing.includes(from)) {
-      throw new EngineError('UNEXPECTED_LAYOUT', `"${from}" was not found inside ${op.targetFile}`);
+    const buf = fs.readFileSync(this.pristine(op.targetFile));
+    // the look goes exactly where the game looks for the source's, spelled as the source's own file spells it
+    let src = this.getAssetPath(op.sourceFile);
+    const own = this.internalName(op.sourceFile);
+    if (src[0].toLowerCase() === own.toLowerCase()) src = src.map((p) => (p.toLowerCase() === own.toLowerCase() ? own : p));
+    const key = this.destinationKey(op.sourceFile);
+    try {
+      return readable(op.targetFile, () => looks.swapLook(buf, src, this.getAssetPath(op.targetFile), this.getKeys(), key));
+    } catch (e) {
+      if (e instanceof EngineError) throw e;
+      throw new EngineError(e.code || 'ERROR', e.message);
     }
-    return res.buffer;
   }
 
   list() {
@@ -236,6 +253,7 @@ class Engine {
 
     const record = {
       id: crypto.randomUUID(), key, file: name, op, appliedAt: Date.now(), ...(created ? { created: true } : {}),
+      ...(op.kind === 'swap' ? { rev: SWAP_REV } : {}),
       written: { size: st.size, mtimeMs: st.mtimeMs },
     };
     const active = this.store.get('active');
@@ -281,6 +299,18 @@ class Engine {
 
   reconcile() {
     return Object.keys(this.store.get('active')).filter((key) => this.dropIfOverwritten(key));
+  }
+
+  // Swaps written before 0.4.10 only renamed names, which leaves a look kept in a group or under a
+  // tier name where the game never looks. Each is built again once. Call only while the game is
+  // closed. Returns the labels of what was rebuilt.
+  rebuildSwaps() {
+    const done = [];
+    for (const rec of Object.values(this.store.get('active'))) {
+      if (rec.op.kind !== 'swap' || (rec.rev || 0) >= SWAP_REV) continue;
+      try { this.applyNow(rec.op); done.push(rec.op.label || rec.file); } catch { /* left as it is; it can be reverted */ }
+    }
+    return done;
   }
 
   // Versions before 0.1.1 wrote swaps and arena copies with the wrong key when the

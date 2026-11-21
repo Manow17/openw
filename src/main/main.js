@@ -11,6 +11,7 @@ const upk = require('./core/upk');
 const { Maps, MAP_SLOT } = require('./core/library');
 const arenas = require('./core/arenas');
 const mapbuild = require('./core/mapbuild');
+const looks = require('./core/looks');
 const { readLabels, readTexts, applyLabels } = require('./core/labels');
 const T = require('../shared/transform');
 const inputLib = require('./input');
@@ -147,6 +148,45 @@ function retryMissingThumbs() {
 }
 
 const cooked = () => (settings.get('installDir') ? game.cookedDir(settings.get('installDir')) : null);
+
+// Where the game finds each item's look (its item list), and which looks it has loaded before the
+// item's own file is read (looks.js). Read once per game version and key list, kept in looks.json;
+// forgotten when the folder or keys change and whenever the game closes (it may have updated).
+let lookData = null;
+function lookIndex() {
+  const dir = cooked();
+  if (!dir) return { products: {}, early: {} };
+  if (lookData && lookData.dir === dir) return lookData;
+  const stat = (f) => { try { const st = fs.statSync(engine.pristine(f)); return `${st.size}:${Math.round(st.mtimeMs)}`; } catch { return ''; } };
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((f) => looks.EARLY.test(f) || looks.UNTOUCHABLE.test(f)).sort(); } catch { /* no folder */ }
+  const sig = JSON.stringify([dir, extraKeys.length, ...names.map((f) => `${f}:${stat(f)}`)]);
+  const store = new Store(path.join(app.getPath('userData'), 'looks.json'), {});
+  if (store.get('sig') === sig && store.get('products')) {
+    lookData = { dir, products: store.get('products'), early: store.get('early') || {} };
+    return lookData;
+  }
+  let products = {}, early = {};
+  try { products = looks.readProducts(dir, extraKeys); } catch (e) { logError('item list', e); }
+  const want = new Set(Object.values(products).flat().map(([, p]) => p.toLowerCase()));
+  try { early = looks.scanEarly(dir, want, extraKeys, (f) => engine.pristine(f)); } catch (e) { logError('early packages', e); }
+  store.data = { sig, products, early };
+  try { store.save(); } catch (e) { logError('looks.json', e); }
+  lookData = { dir, products, early };
+  return lookData;
+}
+const assetPathOf = (file) => looks.assetPath(lookIndex().products, file);
+
+// Swapped items the game has loaded before their own file (defaults in Startup.upk and the main
+// menu's scenes) need that early copy renamed, or the swap never shows. One 'hide' change per
+// early package, worked out again from every swap that is on or queued; none is left behind.
+async function syncHides() {
+  if (!cooked()) return;
+  const plan = looks.planHides(engine.list(), assetPathOf, lookIndex().early);
+  for (const key of plan.unqueue) engine.unqueue(key);
+  for (const key of plan.revert) await engine.revert(key);
+  for (const op of plan.apply) await engine.apply(op);
+}
 const inputProfile = () => { const i = settings.get('input'); return T.complete(i.profiles.find((p) => p.id === i.profile) || i.profiles[0]); };
 const saveInput = (patch) => settings.set('input', { ...settings.get('input'), ...patch });
 
@@ -217,6 +257,14 @@ async function buildIndex() {
   }
   index.data = { dir, keys: keys.length, files };
   index.save();
+  // where the game finds each look, and items it loads before their own file (looks.js)
+  const { products, early } = lookIndex();
+  for (const item of built.items) {
+    item.path = looks.assetPath(products, item.file);
+    const hit = early[item.path.join('.').toLowerCase()];
+    if (hit && hit.untouchable.length) item.stuck = hit.untouchable[0];
+    else if (hit && hit.exports.length) item.early = hit.exports;
+  }
   // real item names, from the game's own text file
   built.named = applyLabels(built.items, readLabels(dir, keys));
   built.items.sort((a, b) => a.label.localeCompare(b.label));
@@ -392,6 +440,7 @@ const api = {
     settings.set('installDir', dir);
     catalog = null;
     arenaList = null;
+    lookData = null;
     return snapshot();
   },
   async browseInstall(platform) {
@@ -423,11 +472,12 @@ const api = {
   checkSwap: (op) => engine.checkSwap(op),
   async apply(op) {
     const res = await engine.apply(op);
+    if (op.kind === 'swap') await syncHides();
     return { ...res, state: snapshot() };
   },
-  async revert(key) { await engine.revert(key); return snapshot(); },
+  async revert(key) { await engine.revert(key); await syncHides(); return snapshot(); },
   async revertAll() { await engine.revertAll(); return snapshot(); },
-  unqueue(key) { engine.unqueue(key); return snapshot(); },
+  async unqueue(key) { engine.unqueue(key); await syncHides(); return snapshot(); },
 
   mapsList: () => maps.list(),
   async mapsAdd() {
@@ -556,7 +606,7 @@ const api = {
 
 
   presetSave(name) {
-    const ops = engine.list().active.map((r) => r.op);
+    const ops = engine.list().active.map((r) => r.op).filter((op) => op.kind !== 'hide'); // worked out again on load
     if (!ops.length) throw new Error('Nothing is active yet. Apply something first.');
     const presets = settings.get('presets');
     presets.push({ id: Date.now().toString(36), name: String(name).slice(0, 40) || 'My setup', ops, savedAt: Date.now() });
@@ -568,9 +618,10 @@ const api = {
     if (!preset) throw new Error('Preset not found');
     await engine.revertAll();
     const errors = [];
-    for (const op of preset.ops) {
+    for (const op of preset.ops.filter((o) => o.kind !== 'hide')) {
       try { await engine.apply(op); } catch (e) { errors.push(`${op.label || op.gameFile || op.sourceFile}: ${e.message}`); }
     }
+    try { await syncHides(); } catch (e) { errors.push(e.message); }
     return { errors, state: snapshot() };
   },
   presetDelete(id) {
@@ -721,6 +772,7 @@ const api = {
     retryMissingThumbs();
     catalog = null;
     arenaList = null; // arenas the old keys could not open (and their parts) are read again
+    lookData = null;
     return snapshot();
   },
   overlayConfig: (kind) => overlayPayload(kind),
@@ -742,6 +794,19 @@ const api = {
   },
 };
 
+// Swaps written by a version before 0.4.10 are built again the way the game reads them, and items
+// the game loads early get their early copy renamed (syncHides). While the game is closed only.
+// Returns a line for the page, or ''.
+async function upgradeSwaps() {
+  const hidden = () => engine.list().active.filter((r) => r.op.kind === 'hide').length;
+  const before = hidden();
+  let rebuilt = [];
+  try { rebuilt = engine.rebuildSwaps(); } catch (e) { logError('rebuild swaps', e); }
+  try { await syncHides(); } catch (e) { logError('hide', e); }
+  if (!rebuilt.length && hidden() === before) return '';
+  return `Item swaps updated so they show in game${rebuilt.length ? `: ${rebuilt.join(', ')}` : ''}.`;
+}
+
 async function poll() {
   const now = await game.isRunning();
   if (now === running) return;
@@ -749,10 +814,12 @@ async function poll() {
   syncOverlays();
   let flushed = [], notice = '';
   if (!running) {
+    lookData = null; // the game may have been updated
     flushed = await engine.flushQueue((done, total) => send('progress', { what: 'queue', done, total }));
     // anything an older version wrote with the wrong key is rebuilt as soon as the game closes
     const repaired = engine.repairKeys();
     if (repaired.length) notice = `Rebuilt ${repaired.length === 1 ? 'a change' : `${repaired.length} changes`} that an earlier version wrote incorrectly: ${repaired.join(', ')}.`;
+    notice = [notice, await upgradeSwaps()].filter(Boolean).join(' ');
   }
   send('state', { state: snapshot(), flushed, notice });
 }
@@ -769,6 +836,7 @@ app.whenReady().then(async () => {
     getCookedDir: cooked,
     isRunning: game.isRunning,
     getKeys: () => extraKeys,
+    getAssetPath: (file) => assetPathOf(file),
   });
   loadKeys();
   maps = new Maps(path.join(data, 'maps'));
@@ -820,6 +888,12 @@ app.whenReady().then(async () => {
   running = await game.isRunning();
   // swaps written by an older version with the wrong key crash the game: rebuild them
   const repaired = installed && !running && !smokeShot ? engine.repairKeys() : [];
+  // swaps from before 0.4.10 are brought up to date (while the game runs, only queued)
+  let upgraded = '';
+  if (installed && !smokeShot) {
+    if (!running) upgraded = await upgradeSwaps();
+    else syncHides().catch((e) => logError('hide', e));
+  }
 
   protocol.handle('thumb', (request) => {
     let jpg = null;
@@ -848,9 +922,8 @@ app.whenReady().then(async () => {
   // test hook, smoke mode only: --smoke-page=nowplaying screenshots an overlay page instead of the app
   const page = smokeShot && arg('smoke-page') ? `${path.basename(arg('smoke-page'))}.html` : 'index.html';
   await win.loadFile(path.join(__dirname, '../renderer', page), { hash: arg('tab') || '' });
-  if (repaired.length) {
-    setTimeout(() => send('state', { state: snapshot(), flushed: [], notice: `Rebuilt ${repaired.length === 1 ? 'a change' : `${repaired.length} changes`} that an earlier version wrote incorrectly: ${repaired.join(', ')}.` }), 1500);
-  }
+  const startNotice = [repaired.length ? `Rebuilt ${repaired.length === 1 ? 'a change' : `${repaired.length} changes`} that an earlier version wrote incorrectly: ${repaired.join(', ')}.` : '', upgraded].filter(Boolean).join(' ');
+  if (startNotice) setTimeout(() => send('state', { state: snapshot(), flushed: [], notice: startNotice }), 1500);
 
   if (smokeShot) {
     const errors = [];
