@@ -54,13 +54,16 @@ const NOT_STANDARD = /^(labs_|hoops|shattershot|throwbackhockey|ko_|street_p$|wa
 // merged arena is still scanned as the game shipped it.
 function scanArenas(cookedDir, cache = {}, extraKeys = [], names = new Map(), resolve = null) {
   const where = (f) => (resolve ? resolve(f) : path.join(cookedDir, f));
-  const files = fs.readdirSync(cookedDir).filter((f) => /\.upk$/i.test(f) && !/_SF\.upk$/i.test(f));
+  let all;
+  try { all = fs.readdirSync(cookedDir); } catch (e) { throw new Error(`OpenW cannot read the game folder ${cookedDir} (${e.code || e.message}). Check the Rocket League folder in Settings.`); }
+  const files = all.filter((f) => /\.upk$/i.test(f) && !/_SF\.upk$/i.test(f));
   const byLower = new Map(files.map((f) => [f.replace(/\.upk$/i, '').toLowerCase(), f]));
   const isMap = (f) => /_P\.upk$/i.test(f) && !/^BG_|_Art_|_VFX_P|_OOB_P|MapImage/i.test(f);
   const arenas = [];
   for (const file of files.filter(isMap)) {
     const base = file.replace(/\.upk$/i, '');
-    const size = fs.statSync(where(file)).size;
+    let size;
+    try { size = fs.statSync(where(file)).size; } catch { continue; } // a file that cannot be read is left out
     let entry = cache[file];
     if (!entry || entry.size !== size) {
       let parts = [];

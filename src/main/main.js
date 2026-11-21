@@ -65,6 +65,18 @@ function moveOldData() {
 }
 
 let win = null, settings, engine, maps, catalog = null, arenaList = null, running = false, updater = null;
+
+// Errors go to openw.log in the data folder (the newest 200 KB), so a problem on someone's PC can be read.
+function logError(where, e) {
+  try {
+    const file = path.join(app.getPath('userData'), 'openw.log');
+    const line = `${new Date().toISOString()} v${app.getVersion()} ${where}: ${(e && e.stack) || e}\n`;
+    if (fs.existsSync(file) && fs.statSync(file).size > 200000) fs.writeFileSync(file, fs.readFileSync(file, 'utf8').slice(-100000));
+    fs.appendFileSync(file, line);
+  } catch { /* logging must never break anything */ }
+}
+process.on('uncaughtException', (e) => logError('uncaught', e));
+process.on('unhandledRejection', (e) => logError('unhandled', e));
 const input = new inputLib.Input();
 
 const ACCENT = '#00d8c8';
@@ -344,6 +356,8 @@ const api = {
     if (!catalog) {
       catalogJob ??= buildIndex().finally(() => { catalogJob = null; });
       await catalogJob;
+      if (!catalog) { catalogJob ??= buildIndex().finally(() => { catalogJob = null; }); await catalogJob; } // the folder or keys changed meanwhile
+      if (!catalog) throw new Error('The item list could not be built. Try again.');
     }
     return catalog;
   },
@@ -718,7 +732,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('api', async (_e, method, ...args) => {
     if (!Object.hasOwn(api, method)) throw new Error(`Unknown method ${method}`);
-    return api[method](...args);
+    try { return await api[method](...args); } catch (e) { logError(method, e); throw e; }
   });
 
   win = new BrowserWindow({

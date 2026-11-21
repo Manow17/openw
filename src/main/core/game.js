@@ -43,9 +43,17 @@ function fromInstalledList(file) {
     return hit ? hit.InstallLocation : null;
   } catch { return null; }
 }
-// The usual Epic folders on every drive, for a launcher that keeps its records elsewhere.
-function fromCommonFolders(drives = null) {
-  const letters = drives || 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('').filter((l) => { try { return fs.existsSync(`${l}:\\`); } catch { return false; } });
+// The PC's own fixed drives ("C", "D"): a network or empty disc drive can stall a check for minutes.
+function fixedDrives() {
+  return new Promise((resolve) => {
+    execFile('powershell', ['-NoProfile', '-Command', "(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3').DeviceID -join ','"], { windowsHide: true, timeout: 8000 }, (err, out) => {
+      const list = !err ? String(out).split(',').map((d) => d.trim().replace(':', '')).filter((d) => /^[A-Z]$/i.test(d)) : [];
+      resolve(list.length ? list : ['C']);
+    });
+  });
+}
+// The usual Epic folders on every fixed drive, for a launcher that keeps its records elsewhere.
+function fromCommonFolders(letters) {
   const places = ['Program Files\\Epic Games', 'Program Files (x86)\\Epic Games', 'Epic Games', 'Games\\Epic Games', 'Games', 'EpicGames', 'Epic'];
   for (const l of letters) {
     for (const p of places) for (const name of ['rocketleague', 'RocketLeague', 'Rocket League']) {
@@ -66,7 +74,7 @@ async function detectEpic(options = {}) {
   const dirs = options.manifestDirs || [EPIC_MANIFESTS, await regQuery('HKCU\\Software\\Epic Games\\EOS', 'ModSdkMetadataDir')].filter(Boolean);
   for (const dir of dirs) { const hit = fromManifests(path.normalize(dir)); if (hit) return hit; }
   for (const file of options.installedLists || [EPIC_INSTALLED]) { const hit = fromInstalledList(file); if (hit) return hit; }
-  return fromCommonFolders(options.drives);
+  return fromCommonFolders(options.drives || await fixedDrives());
 }
 
 function regQuery(key, value) {

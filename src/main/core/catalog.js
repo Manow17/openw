@@ -49,7 +49,8 @@ function prettify(raw) {
 }
 
 function buildCatalog(cookedDir) {
-  const files = fs.readdirSync(cookedDir);
+  let files;
+  try { files = fs.readdirSync(cookedDir); } catch (e) { throw new Error(`OpenW cannot read the game folder ${cookedDir} (${e.code || e.message}). Check the Rocket League folder in Settings.`); }
   const byLower = new Map(files.map((f) => [f.toLowerCase(), f]));
   const items = [];
   for (const file of files) {
@@ -79,7 +80,8 @@ function annotate(cookedDir, items, cache = {}, skip = new Set(), extraKeys = []
     const known = cache[item.id];
     if (known && skip.has(item.id)) { item.ok = known.ok; continue; }
     const file = path.join(cookedDir, item.file);
-    const size = fs.statSync(file).size;
+    let size;
+    try { size = fs.statSync(file).size; } catch { item.ok = false; continue; } // a file that cannot be read: listed, not usable
     if (!known || known.size !== size) cache[item.id] = { size, ok: upk.probeFile(file, extraKeys) };
     item.ok = cache[item.id].ok;
   }

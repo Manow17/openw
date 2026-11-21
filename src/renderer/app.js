@@ -299,17 +299,27 @@ function setup() {
 
 /* ---------- garage: item swaps ---------- */
 
+// A failed load is shown with its reason and a way to try again, never as endless loading.
+const reason = (e) => String((e && e.message) || e).replace(/^Error invoking remote method 'api': (Error: )?/, '');
+const failed = (glyph, heading, error, retry) => empty(glyph, heading, `${error} Details are in openw.log in the data folder.`,
+  h('div', { class: 'row wrap', style: 'justify-content:center' }, h('button', { class: 'btn primary', onclick: retry }, 'Try again'), h('button', { class: 'btn', onclick: () => api('openDataFolder') }, 'Open data folder')));
+let catalogError = null, catalogLoading = false;
 async function ensureCatalog() {
-  if (catalog) return;
-  catalog = await api('getCatalog');
-  catalog.counts = {};
-  catalog.byId = new Map();
-  for (const i of catalog.items) {
-    catalog.counts[i.category] = (catalog.counts[i.category] || 0) + 1;
-    catalog.byId.set(i.id, i);
-    i.search = `${i.label} ${i.sub} ${i.name} ${i.file}`.toLowerCase(); // shop name, car, internal name
-  }
-  catalog.catLabel = Object.fromEntries(catalog.categories.map((c) => [c.id, c.label]));
+  if (catalog || catalogLoading) return;
+  catalogLoading = true;
+  try {
+    const c = await api('getCatalog');
+    c.counts = {};
+    c.byId = new Map();
+    for (const i of c.items) {
+      c.counts[i.category] = (c.counts[i.category] || 0) + 1;
+      c.byId.set(i.id, i);
+      i.search = `${i.label} ${i.sub} ${i.name} ${i.file}`.toLowerCase(); // shop name, car, internal name
+    }
+    c.catLabel = Object.fromEntries(c.categories.map((x) => [x.id, x.label]));
+    catalog = c;
+    catalogError = null;
+  } catch (e) { catalogError = reason(e); } finally { catalogLoading = false; }
   if (ui.tab === 'garage') render(true);
 }
 
@@ -342,6 +352,7 @@ let garage = null;   // handles of the mounted Garage page, so a pick does not r
 
 views.garage = () => {
   const root = bento();
+  if (!catalog && catalogError) { root.append(tile('s12', failed('cars', 'Your game files could not be read', catalogError, () => { catalogError = null; render(); }))); return root; }
   if (!catalog) { ensureCatalog(); root.append(tile('s12', empty('cars', 'Reading your game files', 'Building the item list from your own install.'))); return root; }
 
   const pool = () => catalog.items.filter((i) => i.category === ui.cat);
@@ -519,7 +530,7 @@ views.maps = () => {
 };
 
 // Map Merge works on the arenas that ship with the game (see main/core/arenas.js).
-let arenas = null;
+let arenas = null, arenasError = null, arenasLoading = false;
 const lab = { donor: null, base: null, snow: null, every: null };
 const gb = (bytes) => `${(bytes / 1e9).toFixed(1)} GB`;
 // The arenas that show a changed file: the arena itself, or every arena that loads that part.
@@ -528,8 +539,12 @@ const playHint = (list) => (list.length ? `Play ${list.map((a) => a.name).join('
 
 views.lab = () => {
   const root = bento(noteTile('warn', 's12', 'Experimental. Merges sort every piece of both arenas into stadium or outside by name and position, so an odd piece can land on the wrong side; tell us which. Only you see the result, and every change can be reverted below. To pick an arena yourself, use Free Play, Exhibition or a Private Match.'));
+  if (!arenas && arenasError) { root.append(tile('s12', failed('maps', 'The arenas could not be read', arenasError, () => { arenasError = null; render(); }))); return root; }
   if (!arenas) {
-    api('arenas').then((list) => { arenas = list; if (ui.tab === 'lab') render(true); });
+    if (!arenasLoading) {
+      arenasLoading = true;
+      api('arenas').then((list) => { arenas = list; }, (e) => { arenasError = reason(e); }).finally(() => { arenasLoading = false; if (ui.tab === 'lab') render(true); });
+    }
     root.append(tile('s12', empty('maps', 'Reading the arenas', 'Finding the parts each arena is built from.')));
     return root;
   }
