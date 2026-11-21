@@ -275,6 +275,15 @@ function everyMatchOps(chosen, arenas, changes = new Map(), label = chosen.name)
   }));
 }
 
+// Whether two sets of every-match ops write the same files in the same way. Every match is out
+// of date when what it wrote is not what it would write now (a merge made, changed or reverted).
+function sameEveryMatch(a, b) {
+  const sig = (o) => JSON.stringify([o.gameFile.toLowerCase(), o.kind, o.sourceGameFile || null, o.from || null, o.side || null,
+    o.renames || null, o.region || null, o.clear || null, !!o.gameplay, !!o.lights, !!o.part]);
+  const x = a.map(sig).sort(), y = b.map(sig).sort();
+  return x.length === y.length && x.every((s, i) => s === y[i]);
+}
+
 /**
  * Snow for an arena, merged or not. Falling snow only exists inside the game's four snowy
  * arenas (there is no separate snow file: Forbidden Temple (Fire & Ice)'s effects file is
@@ -297,4 +306,4 @@ function snowPlan(arena, arenas, changes = new Map()) {
   return { how: 'version', op, play: [arena], snowy: snowy.name };
 }
 
-module.exports = { scanArenas, arenaName, partKind, mergePlan, mergeInfo, outsideParts, arenasUsing, everyMatchOps, effectiveArena, mergedArenas, snowPlan };
+module.exports = { scanArenas, arenaName, partKind, mergePlan, mergeInfo, outsideParts, arenasUsing, everyMatchOps, sameEveryMatch, effectiveArena, mergedArenas, snowPlan };

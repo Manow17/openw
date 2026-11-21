@@ -45,8 +45,15 @@ function deflateChunk(data) {
   return Buffer.concat([head, ...blocks.map((b) => b.z)]);
 }
 
+// The package's chunks, compressed. They depend only on the objects, not on the key or the
+// renames (those are in the header), so a build written into several files is compressed once.
+function zipChunks(P) {
+  return P.t.chunks.map((c) => deflateChunk(P.u.subarray(c.uoff - P.base, c.uoff - P.base + c.usize)));
+}
+
 // renames: { oldName: newName }, matched case-insensitively; a new name may be shorter.
-function repack(P, key, renames = {}) {
+// zipped: zipChunks(P), when it is already made.
+function repack(P, key, renames = {}, zipped = zipChunks(P)) {
   const { t, buf } = P;
   const plain = Buffer.from(t.pkg.plain);
   for (const [from, to] of Object.entries(renames)) {
@@ -60,8 +67,8 @@ function repack(P, key, renames = {}) {
   }
   const parts = [Buffer.from(buf.subarray(0, t.chunks[0].coff))];
   let at = t.chunks[0].coff;
-  for (const c of t.chunks) {
-    const z = deflateChunk(P.u.subarray(c.uoff - P.base, c.uoff - P.base + c.usize));
+  for (const [i, c] of t.chunks.entries()) {
+    const z = zipped[i];
     plain.writeBigInt64LE(BigInt(at), c.at + 12);
     plain.writeInt32LE(z.length, c.at + 20);
     parts.push(z);
@@ -430,4 +437,4 @@ function newFileName(seed, maxLen) {
   return `BP${hex.slice(0, Math.max(4, Math.min(8, maxLen - 2)))}`;
 }
 
-module.exports = { open, repack, keepSide, levelActors, partNames, newFileName, deflateChunk, tagged, inventory, arenaRegion, standBoxes, stadiumPieces, DEFAULT_REGION };
+module.exports = { open, repack, zipChunks, keepSide, levelActors, partNames, newFileName, deflateChunk, tagged, inventory, arenaRegion, standBoxes, stadiumPieces, DEFAULT_REGION };

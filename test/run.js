@@ -223,6 +223,57 @@ function makeEngine(cooked, running = { value: false }) {
     assert.strictEqual(sha(dest), original);
   }, !real);
 
+  test('queued changes go in one file at a time, and wait again if the game starts meanwhile', async () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'queue-'));
+    const files = ['a.upk', 'b.upk', 'c.upk'];
+    for (const f of files) fs.writeFileSync(path.join(dir, f), `original ${f}`);
+    const src = path.join(tmp, 'queue-new.bin');
+    fs.writeFileSync(src, 'new');
+    const { engine, running } = makeEngine(dir, { value: true });
+    for (const f of files) assert.strictEqual((await engine.apply({ kind: 'file', gameFile: f, from: src })).queued, true);
+    running.value = false;
+    const seen = [];
+    const done = await engine.flushQueue((n, total) => { seen.push(`${n}/${total}`); running.value = true; }); // the game starts after the first
+    assert.deepStrictEqual(seen, ['1/3']);
+    assert.deepStrictEqual(done.map((d) => [d.key, d.ok]), [['a.upk', true]]);
+    assert.strictEqual(fs.readFileSync(path.join(dir, 'a.upk'), 'utf8'), 'new');
+    assert.strictEqual(fs.readFileSync(path.join(dir, 'b.upk'), 'utf8'), 'original b.upk');
+    assert.deepStrictEqual(engine.list().queue.map((q) => q.key), ['b.upk', 'c.upk']);
+    running.value = false;
+    assert.strictEqual((await engine.flushQueue()).filter((d) => d.ok).length, 2);
+    assert.strictEqual(engine.list().queue.length, 0);
+    assert.strictEqual(fs.readFileSync(path.join(dir, 'c.upk'), 'utf8'), 'new');
+    await engine.revertAll();
+    for (const f of files) assert.strictEqual(fs.readFileSync(path.join(dir, f), 'utf8'), `original ${f}`);
+  });
+
+  test('a build written into several arena files is made once', async () => {
+    const keysFile = path.join(process.env.APPDATA || '', 'OpenW', 'keys.txt');
+    const file = path.join(real || '', 'Farm_GRS_P.upk');
+    if (!fs.existsSync(keysFile) || !fs.existsSync(file)) return;
+    const keys = upk.parseKeys(fs.readFileSync(keysFile, 'utf8'));
+    const backup = path.join(process.env.APPDATA, 'OpenW', 'backups', 'farm_grs_p.upk');
+    const dir = fs.mkdtempSync(path.join(tmp, 'builds-'));
+    fs.copyFileSync(fs.existsSync(backup) ? backup : file, path.join(dir, 'Farm_GRS_P.upk'));
+    const engineWith = () => new Engine({ store: new Store(path.join(fs.mkdtempSync(path.join(tmp, 'data-')), 'state.json')), backupDir: path.join(tmp, 'unused'), getCookedDir: () => dir, isRunning: async () => false, getKeys: () => keys });
+    const op = (gameFile, extra = {}) => ({ kind: 'build', gameFile, from: 'Farm_GRS_P.upk', side: 'surroundings', create: true, renames: { Farm_SFX: 'BPabcd12' }, ...extra });
+    const open = mapbuild.open;
+    let opens = 0;
+    mapbuild.open = (...a) => { opens++; return open(...a); };
+    try {
+      const engine = engineWith();
+      for (const f of ['One_P.upk', 'Two_P.upk', 'Three_P.upk']) await engine.apply(op(f));
+      assert.strictEqual(opens, 1, 'the same build was made again for each file');
+      await engine.apply(op('Four_P.upk', { side: 'stadium' })); // a different build is made anew
+      assert.strictEqual(opens, 2);
+      // what is written is what a build of its own gives, byte for byte
+      const alone = engineWith().buildContent(op('Two_P.upk'));
+      assert.strictEqual(crypto.createHash('sha1').update(alone).digest('hex'), sha(path.join(dir, 'Two_P.upk')));
+      const t = upk.readTables(fs.readFileSync(path.join(dir, 'Three_P.upk')), keys);
+      assert.ok(t.names.includes('BPabcd12'));
+    } finally { mapbuild.open = open; }
+  }, !real);
+
   test('a file replaced by a game update is left alone on revert', async () => {
     const { engine, data } = makeEngine(cooked);
     const dest = path.join(cooked, midF);
@@ -403,6 +454,25 @@ function makeEngine(cooked, running = { value: false }) {
     // merged arenas get no snow: the snowy version would replace what makes the merge
     for (const a of [aqua, winter, dfh]) assert.strictEqual(arenas.snowPlan(a, all, changes), null);
     assert.strictEqual(arenas.snowPlan(dfh, all).op.sourceGameFile, 'stadium_winter_p.upk');
+  });
+
+  test('every match is out of date once a merge changes the arena it shows', () => {
+    const part = (file) => ({ file, kind: arenas.partKind(file.replace(/\.upk$/, '')) });
+    const arena = (id, name, parts) => ({ id, name, file: `${id}.upk`, standard: true, playable: true, parts: parts.map(part), field: parts.find((p) => /_Field/.test(p)) || null });
+    const aqua = arena('underwater_p', 'AquaDome', ['Underwater_Field.upk', 'Underwater_FX.upk']);
+    const neon = arena('music_p', 'Neon Fields', ['Music_Field.upk', 'Music_Effects.upk']);
+    const mann = arena('eurostadium_p', 'Mannfield', []);
+    const all = [aqua, neon, mann];
+    const changes = new Map();
+    const on = () => [...changes.values()].filter((o) => o.group === 'everymatch');
+    for (const op of arenas.everyMatchOps(aqua, all, changes)) changes.set(op.gameFile.toLowerCase(), op);
+    assert.ok(arenas.sameEveryMatch(on(), arenas.everyMatchOps(aqua, all, changes)), 'nothing changed');
+    // Neon Fields' stadium merged into AquaDome: every match should now show the merge
+    for (const op of arenas.mergePlan(neon, aqua, all).ops) changes.set(op.gameFile.toLowerCase(), op);
+    assert.ok(!arenas.sameEveryMatch(on(), arenas.everyMatchOps(aqua, all, changes)));
+    // brought up to date, it is the same again
+    for (const op of arenas.everyMatchOps(aqua, all, changes)) changes.set(op.gameFile.toLowerCase(), op);
+    assert.ok(arenas.sameEveryMatch(on(), arenas.everyMatchOps(aqua, all, changes)));
   });
 
   test('ground under the new pitch is lowered, even when it has no position of its own', () => {

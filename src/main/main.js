@@ -233,6 +233,29 @@ function arenaChanges() {
   return out;
 }
 
+const fileSize = (file) => { try { return fs.statSync(file).size; } catch { return 0; } };
+// How big each arena file becomes with "same arena every match" on the chosen arena: its merge as built
+// (or, while that is still queued, the map it is built from), or a copy of the file it loads.
+function everyFileSize(chosen, list, changes) {
+  const key = chosen.file.toLowerCase(), op = changes.get(key);
+  if (op && op.kind === 'build' && op.group !== 'everymatch') {
+    const rec = engine.list().active.find((r) => r.key === key);
+    return rec && rec.op === op ? rec.written.size : fileSize(engine.pristine(op.from));
+  }
+  return fileSize(engine.pristine(arenas.effectiveArena(chosen, list, changes).file));
+}
+// The every-match ops for an arena, under the name of its merge if it has one.
+function everyOpsFor(chosen, list, changes) {
+  const merge = arenas.mergedArenas(list, changes).find((m) => m.arena.id === chosen.id);
+  return arenas.everyMatchOps(chosen, list, changes, merge ? merge.label : chosen.name);
+}
+// Every match is out of date when a merge was made, changed or reverted since it was turned on.
+function everyMatchStale(list, changes) {
+  const on = [...changes.values()].filter((op) => op.group === 'everymatch');
+  const chosen = on.length && list.find((a) => a.id === on[0].chosen);
+  return !!chosen && !arenas.sameEveryMatch(on, everyOpsFor(chosen, list, changes));
+}
+
 function snapshot() {
   const dir = settings.get('installDir');
   return {
@@ -424,27 +447,35 @@ const api = {
     const mergedIds = new Set(merged.map((m) => m.arena.id));
     const all = [...merged.map((m) => ({ arena: m.arena, label: m.label, merged: true })),
       ...list.filter((a) => !mergedIds.has(a.id)).map((a) => ({ arena: a, label: a.name, merged: false }))];
-    const every = all.filter((c) => c.arena.standard).map((c) => ({ id: c.arena.id, label: c.label, merged: c.merged }));
+    // per arena: how many files every match replaces, and the disk space those take (the
+    // originals are kept as backups, so that is what it adds)
+    const every = all.filter((c) => c.arena.standard).map((c) => {
+      const files = everyOpsFor(c.arena, list, changes).length;
+      return { id: c.arena.id, label: c.label, merged: c.merged, files, bytes: files * everyFileSize(c.arena, list, changes) };
+    });
     const snow = [], noSnow = [];
     for (const c of all.filter((x) => x.arena.playable)) {
       const plan = arenas.snowPlan(c.arena, list, changes);
       if (plan) snow.push({ id: c.arena.id, label: c.label, merged: c.merged, how: plan.how, snowy: plan.snowy, play: plan.play.map((a) => a.name) });
       else if (c.merged) noSnow.push(c.label);
     }
-    return { every, snow, noSnow };
+    return { every, everyStale: everyMatchStale(list, changes), snow, noSnow };
   },
   // Same arena every match: one copy per standard arena, applied (or queued) one by one.
   async everyMatch(id) {
     const list = api.arenas(), chosen = list.find((a) => a.id === id);
     if (!chosen) throw new Error('Arena not found');
     const changes = arenaChanges();
-    const merge = arenas.mergedArenas(list, changes).find((m) => m.arena.id === id);
-    const ops = arenas.everyMatchOps(chosen, list, changes, merge ? merge.label : chosen.name);
-    // an arena chosen before: those copies go back first, so no file keeps the old one
+    const ops = everyOpsFor(chosen, list, changes);
+    // an arena chosen before: files the new choice does not write go back, so none keeps the old
+    // one; the others are written over (their backup stays the original)
     for (const q of engine.list().queue) if (q.op && q.op.group === 'everymatch') engine.unqueue(q.key);
-    for (const rec of engine.list().active) if (rec.op.group === 'everymatch' && (rec.op.chosen !== id || !ops.some((o) => o.gameFile === rec.op.gameFile && o.sourceGameFile === rec.op.sourceGameFile))) await engine.revert(rec.key);
+    for (const rec of engine.list().active) if (rec.op.group === 'everymatch' && !ops.some((o) => o.gameFile.toLowerCase() === rec.key)) await engine.revert(rec.key);
     let queued = false;
-    for (const op of ops) queued = (await engine.apply(op)).queued || queued;
+    for (const [i, op] of ops.entries()) {
+      queued = (await engine.apply(op)).queued || queued;
+      send('progress', { what: 'every', done: i + 1, total: ops.length });
+    }
     return { queued, state: snapshot() };
   },
   async everyMatchOff() {
@@ -691,7 +722,7 @@ async function poll() {
   syncOverlays();
   let flushed = [], notice = '';
   if (!running) {
-    flushed = await engine.flushQueue();
+    flushed = await engine.flushQueue((done, total) => send('progress', { what: 'queue', done, total }));
     // anything an older version wrote with the wrong key is rebuilt as soon as the game closes
     const repaired = engine.repairKeys();
     if (repaired.length) notice = `Rebuilt ${repaired.length === 1 ? 'a change' : `${repaired.length} changes`} that an earlier version wrote incorrectly: ${repaired.join(', ')}.`;

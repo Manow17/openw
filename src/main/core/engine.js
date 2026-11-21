@@ -79,17 +79,10 @@ class Engine {
     if (op.kind === 'build') {
       if (!op.from || path.basename(op.from) !== op.from) throw new EngineError('BAD_OP', 'Invalid source file name');
       if (!['stadium', 'surroundings', 'empty'].includes(op.side)) throw new EngineError('BAD_OP', 'Invalid side');
-      const from = this.pristine(op.from);
-      if (!fs.existsSync(from)) throw new EngineError('NO_SUCH_GAME_FILE', `${op.from} is not in the game folder`);
-      const pkg = mapbuild.open(fs.readFileSync(from), this.getKeys());
-      mapbuild.keepSide(pkg, op.side, {
-        region: op.region || mapbuild.DEFAULT_REGION, clear: op.clear || [],
-        gameplay: op.gameplay === undefined ? op.side === 'stadium' : !!op.gameplay, part: !!op.part,
-        lights: op.lights === undefined ? null : !!op.lights,
-      });
+      const { pkg, zipped } = this.trimmedMap(op);
       // a file the game has never had is read with the game's common key
       const key = op.create ? Buffer.from(upk.DEFAULT_KEYS[0], 'hex') : this.destinationKey(op.gameFile);
-      return mapbuild.repack(pkg, key || pkg.t.pkg.key, op.renames || {});
+      return mapbuild.repack(pkg, key || pkg.t.pkg.key, op.renames || {}, zipped);
     }
     if (op.kind === 'copy') {
       if (!op.sourceGameFile || path.basename(op.sourceGameFile) !== op.sourceGameFile) throw new EngineError('BAD_OP', 'Invalid source file name');
@@ -153,19 +146,51 @@ class Engine {
     this.store.set('queue', this.store.get('queue').filter((q) => q.key !== key));
   }
 
-  // Run everything that was queued while the game was open.
-  async flushQueue() {
+  // The map of a build op opened and cut down to its side, with its chunks compressed. The last
+  // one is kept for a few seconds: "same arena every match" writes the same build into up to 60
+  // arena files, and between those only the header (key and names) differs.
+  trimmedMap(op) {
+    const from = this.pristine(op.from);
+    if (!fs.existsSync(from)) throw new EngineError('NO_SUCH_GAME_FILE', `${op.from} is not in the game folder`);
+    const opts = {
+      region: op.region || mapbuild.DEFAULT_REGION, clear: op.clear || [],
+      gameplay: op.gameplay === undefined ? op.side === 'stadium' : !!op.gameplay, part: !!op.part,
+      lights: op.lights === undefined ? null : !!op.lights,
+    };
+    const st = fs.statSync(from);
+    const sig = JSON.stringify([from, st.size, st.mtimeMs, op.side, opts]);
+    if (!this.lastBuild || this.lastBuild.sig !== sig) {
+      this.lastBuild = null; // the previous one goes before the next is read
+      const pkg = mapbuild.open(fs.readFileSync(from), this.getKeys());
+      mapbuild.keepSide(pkg, op.side, opts);
+      this.lastBuild = { sig, pkg, zipped: mapbuild.zipChunks(pkg) };
+    }
+    clearTimeout(this.forgetBuild);
+    this.forgetBuild = setTimeout(() => { this.lastBuild = null; }, 10000);
+    if (this.forgetBuild.unref) this.forgetBuild.unref();
+    return this.lastBuild;
+  }
+
+  // Run everything that was queued while the game was open, one file at a time, so OpenW stays
+  // responsive. onProgress(done, total) after each. If the game starts again meanwhile, the
+  // rest stays queued.
+  async flushQueue(onProgress = null) {
     if (await this.isRunning()) return [];
-    const queue = this.store.get('queue');
-    this.store.set('queue', []);
-    return queue.map((q) => {
+    const todo = [...this.store.get('queue')];
+    const out = [];
+    for (const [i, q] of todo.entries()) {
+      if (i > 0 && await this.isRunning()) break;
       try {
         if (q.type === 'apply') this.applyNow(q.op); else this.revertNow(q.dest);
-        return { key: q.key, ok: true };
+        out.push({ key: q.key, ok: true });
       } catch (e) {
-        return { key: q.key, ok: false, code: e.code, message: e.message };
+        out.push({ key: q.key, ok: false, code: e.code, message: e.message });
       }
-    });
+      // done (or failed, and said so): off the queue; anything queued meanwhile stays
+      this.store.set('queue', this.store.get('queue').filter((x) => !(x.key === q.key && x.queuedAt === q.queuedAt)));
+      if (onProgress) onProgress(i + 1, todo.length);
+    }
+    return out;
   }
 
   applyNow(op) {

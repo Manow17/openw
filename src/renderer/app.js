@@ -243,7 +243,7 @@ function render(animate) {
   const dark = themeMode() === 'dark';
   top.replaceChildren(...[
     h('div', { class: 'pagetitle grow' }, h('h1', {}, name), sub && h('span', { class: 'muted clip' }, sub)),
-    ready && S.running && h('span', { class: 'pill' }, h('span', { class: 'dot live' }), 'Game running · changes are queued'),
+    ready && S.running && h('span', { class: 'pill' }, h('span', { class: 'dot live' }), h('span', { 'data-progress': 'queue' }, 'Game running · changes are queued')),
     S.update && S.update.status === 'ready' && h('button', { class: 'btn sm primary', title: 'Closes OpenW, installs the new version and starts it again', onclick: () => run(() => api('updateInstall'), (r) => (r.update && r.update.status === 'installing' ? 'Installing the update. OpenW starts again when it is done.' : (r.update && r.update.error) || 'The update did not start.')) }, `Update to v${S.update.version}`),
     h('button', { class: 'iconbtn', 'aria-label': dark ? 'Switch to light mode' : 'Switch to dark mode', onclick: () => setTheme(themeMode() === 'dark' ? 'light' : 'dark') }, icon(dark ? 'sun' : 'moon', 18)),
     ready && btnIcon('primary', 'play', 'Play', () => run(() => api('launchGame'), 'Starting Rocket League…'), { disabled: S.running }),
@@ -584,21 +584,24 @@ views.lab = () => {
   const current = (everyOn[0] || everyQueued[0] || {}).op;
   const currentId = current && (current.chosen || (arenas.find((a) => a.file === current.sourceGameFile) || {}).id);
   const currentName = current && (current.label.replace(/ in place of .*$/, ''));
-  const targets = every ? standard.filter((a) => a.id !== every.id) : [];
+  // the chosen arena is already on; out of date when a merge was made or reverted since
+  const same = !!current && currentId === lab.every, stale = !!choices.everyStale;
+  const writing = lab.progress && lab.progress.what === 'every' ? ` ${lab.progress.done} of ${lab.progress.total}` : '';
 
   root.append(
     tile('s12 ink', head('Same arena every match', current && h('span', { class: 'tag on' }, everyQueued.length ? 'Queued' : 'On')),
       h('p', { class: 'muted' }, 'Whatever arena a match is played in, you see the one you pick here: online, offline and in Free Play. Everyone else still sees the real arena. All standard arenas have the same pitch, so the ball, walls and goals line up.'),
       h('div', { class: 'row wrap' },
         select(choices.every.map((c) => [c.id, mergedTag(c)]), lab.every, choose('every'), 360),
-        h('button', { class: 'btn primary', disabled: !every || (currentId === lab.every && !everyQueued.length) || !!lab.busy,
+        h('button', { class: 'btn primary', 'data-progress': 'every', disabled: !every || (same && !everyQueued.length && !stale) || !!lab.busy,
           onclick: () => busy('every', () => run(() => api('everyMatch', lab.every), (r) => (r.queued ? `Queued: ${every.label} goes in when Rocket League closes.` : `Every match now shows ${every.label}.`))) },
-        lab.busy === 'every' ? 'Writing arenas…' : current ? 'Switch to this arena' : 'Use in every match'),
+        lab.busy === 'every' ? `Writing arenas…${writing}` : !current ? 'Use in every match' : same ? 'Update every match' : 'Switch to this arena'),
         current && h('button', { class: 'btn', onclick: () => run(() => api('everyMatchOff'), S.running ? 'Turning it off when the game closes.' : 'Your arenas are back to normal.') }, 'Turn off')),
+      same && stale && h('p', { class: 'small' }, 'An arena changed since this was turned on (a merge was made or reverted), so some arenas are out of date. Update every match brings them in line.'),
       every && every.merged && h('p', { class: 'small' }, `Your merge comes along: every match shows ${every.label}. If you revert that merge later, pick it here again.`),
       h('p', { class: 'muted small' }, current
         ? `Now: ${currentName} in every match (${everyOn.length} arenas replaced${everyQueued.length ? `, ${everyQueued.length} waiting for the game to close` : ''}).`
-        : every ? `Replaces up to ${targets.length} arena files. The originals are backed up first, which takes about ${gb(targets.reduce((s, a) => s + a.size, 0))} of disk space until you turn it off.` : ''),
+        : every ? `Replaces ${every.files} arena files. With the originals backed up, that takes about ${gb(every.bytes)} of disk space until you turn it off.` : ''),
       h('p', { class: 'muted small' }, 'Arenas you merged or snowed yourself keep your change. Rocket Labs, Hoops, Dropshot, Snow Day, Knockout and the odd-shaped arenas (Badlands, Tokyo Underpass, ARCtagon) are left as they are.')),
     tile('s7', head('Merge two arenas', h('span', { class: 'tag' }, `${split.length} arenas`)),
       h('p', { class: 'muted' }, 'Puts the stadium of one arena (pitch, walls, goals and stands) in the surroundings of another. Any two soccar arenas can be picked; Hoops, Dropshot, Snow Day and odd-shaped arenas have a different pitch and are left out.'),
@@ -646,6 +649,7 @@ views.lab = () => {
 // A slow Map Merge action: its button says it is working, and the others wait.
 async function busy(what, fn) {
   lab.busy = what;
+  lab.progress = null;
   render();
   try { return await fn(); } finally { lab.busy = null; render(); }
 }
@@ -1215,6 +1219,13 @@ function updatesTile() {
 }
 
 /* ---------- boot ---------- */
+
+// How far a long write is: the every-match button, or the game pill while queued changes go in.
+window.openw.on('progress', (p) => {
+  if (p.what === 'every') lab.progress = p;
+  const el = document.querySelector(`[data-progress="${p.what}"]`);
+  if (el) el.textContent = p.what === 'every' ? `Writing arenas… ${p.done} of ${p.total}` : `Writing queued changes… ${p.done} of ${p.total}`;
+});
 
 window.openw.on('state', ({ state, flushed, notice }) => {
   S = state;
