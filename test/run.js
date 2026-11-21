@@ -100,6 +100,16 @@ function makeEngine(cooked, running = { value: false }) {
     assert.ok(!game.isValidInstall(left) && game.isValidInstall(install));
     assert.match(game.whyNotInstall(left), /holds 0 game packages/);
     assert.match(game.whyNotInstall(dir), /has no TAGame/);
+    // the game's own log names the folder it ran from, whatever launcher installed it; the newest log wins
+    const docs = path.join(dir, 'Docs');
+    const logs = path.join(docs, 'My Games', 'Rocket League', 'TAGame', 'Logs');
+    fs.mkdirSync(logs, { recursive: true });
+    const base = (d) => 'Init: Base directory: ' + path.join(d, 'Binaries', 'Win64') + path.sep + '\r\n';
+    fs.writeFileSync(path.join(logs, 'Launch-backup-old.log'), 'Log: Log file open\r\n' + base(left));
+    fs.writeFileSync(path.join(logs, 'Launch.log'), 'Log: Log file open\r\nInit: Version: 1\r\n' + base(install) + 'Init: other\r\n');
+    assert.deepStrictEqual(game.fromGameLogs([path.join(dir, 'nothing'), docs]), { dir: install, platform: 'epic' });
+    const found = await game.detect({ documents: [docs], epic: { manifestDirs: [], installedLists: [], drives: [] }, steam: false });
+    assert.strictEqual(found.epic, install);
   });
 
   test('store round-trips', () => {

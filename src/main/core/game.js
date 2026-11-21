@@ -1,5 +1,6 @@
 // Locate Rocket League (Epic Games / Steam), check whether it is running, launch it.
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 
@@ -142,12 +143,56 @@ function fromRunningGame() {
   });
 }
 
-// A running Rocket League's own folder comes first: it is the one the game really uses.
-async function detect() {
-  const [live, epic, steam] = await Promise.all([fromRunningGame(), detectEpic(), detectSteam()]);
+// Where Windows keeps the user's Documents (OneDrive can move it): every place it can be.
+async function documentsDirs() {
+  const out = [];
+  const reg = await regQuery('HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', 'Personal');
+  if (reg) out.push(reg.replace(/%([^%]+)%/g, (m, v) => process.env[v] || m));
+  out.push(path.join(os.homedir(), 'Documents'));
+  if (process.env.OneDrive) out.push(path.join(process.env.OneDrive, 'Documents'));
+  out.push(path.join(os.homedir(), 'OneDrive', 'Documents'));
+  return [...new Set(out.map((d) => path.normalize(d)))];
+}
+
+/**
+ * Rocket League writes the folder it runs from near the top of its log every time it starts
+ * ("Init: Base directory: <install>\Binaries\Win64\"), whatever launcher started it and wherever
+ * it is installed. The newest log that names a real install wins: { dir, platform } or null.
+ * Only that one line is read; nothing else in the log is used or kept.
+ */
+function fromGameLogs(docs) {
+  for (const d of docs) {
+    const logs = path.join(d, 'My Games', 'Rocket League', 'TAGame', 'Logs');
+    let files = [];
+    try {
+      files = fs.readdirSync(logs).filter((f) => /^Launch.*\.log$/i.test(f))
+        .map((f) => ({ f, t: fs.statSync(path.join(logs, f)).mtimeMs })).sort((a, b) => b.t - a.t).map((x) => x.f);
+    } catch { continue; }
+    for (const f of files) {
+      let head = '';
+      try {
+        const fd = fs.openSync(path.join(logs, f), 'r');
+        const buf = Buffer.alloc(65536);
+        const n = fs.readSync(fd, buf, 0, buf.length, 0);
+        fs.closeSync(fd);
+        head = buf.toString('latin1', 0, n);
+      } catch { continue; }
+      const m = /Base directory:\s*(.+?)[\\/]Binaries[\\/]Win64[\\/]?\s*$/mi.exec(head);
+      if (m && isValidInstall(m[1].trim())) return { dir: m[1].trim(), platform: /steamapps/i.test(m[1]) ? 'steam' : 'epic' };
+    }
+  }
+  return null;
+}
+
+// The folder the game really runs from comes first: a running game's own path, or else the
+// folder its newest log names. The launchers' own records come after.
+async function detect(options = {}) {
+  const docs = options.documents || await documentsDirs();
+  const [live, epic, steam] = await Promise.all([fromRunningGame(), detectEpic(options.epic), options.steam === false ? null : detectSteam()]);
+  const used = live || fromGameLogs(docs);
   return {
-    epic: live && live.platform === 'epic' ? live.dir : epic,
-    steam: live && live.platform === 'steam' ? live.dir : steam,
+    epic: used && used.platform === 'epic' ? used.dir : epic,
+    steam: used && used.platform === 'steam' ? used.dir : steam,
   };
 }
 
@@ -166,4 +211,4 @@ function launchUrl(platform) {
     : `com.epicgames.launcher://apps/${EPIC_APP}?action=launch&silent=true`;
 }
 
-module.exports = { cookedDir, isValidInstall, whyNotInstall, packageCount, MIN_PACKAGES, isRocketLeague, detectEpic, detectSteam, fromRunningGame, detect, isRunning, isProcessRunning, launchUrl };
+module.exports = { cookedDir, isValidInstall, whyNotInstall, packageCount, MIN_PACKAGES, isRocketLeague, detectEpic, detectSteam, fromRunningGame, fromGameLogs, detect, isRunning, isProcessRunning, launchUrl };

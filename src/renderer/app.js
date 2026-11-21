@@ -289,7 +289,7 @@ function setup() {
   const choose = (platform, label) => h('button', { class: 'tile s6 press', onclick: async () => {
     const found = await api('detectGame');
     if (found[platform]) run(() => api('setInstall', platform, found[platform]), 'Found Rocket League.');
-    else { toast(`No ${label} install found. Select the "rocketleague" folder, or start Rocket League and click ${label} again: OpenW then finds it from the running game.`, true); run(() => api('browseInstall', platform)); }
+    else { toast(`No ${label} install found. Start Rocket League once and click ${label} again (OpenW then finds it from the game's own log), or select the "rocketleague" folder.`, true); run(() => api('browseInstall', platform)); }
   } }, h('h3', {}, 'Launcher'), h('h2', {}, label), h('span', { class: 'muted small' }, 'Detect automatically'));
   return h('div', { class: 'setupwrap' }, bento(
     tile('s12 hero ink', mark(72), h('h1', {}, 'Where do you play?'), h('p', { class: 'muted' }, 'Pick your launcher and OpenW finds Rocket League for you.')),
