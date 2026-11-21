@@ -76,6 +76,8 @@ function readTexts(cookedDir, extraKeys = []) {
     }
   } catch { /* unreadable: items keep their internal names */ }
   const maps = new Map([...base].map(([file, name]) => [file, variant.has(file) ? `${name} (${variant.get(file)})` : name]));
+  // arenas the game's text did not name (it needs a key list to be read): OpenW's own list
+  for (const [file, name] of Object.entries(require('./arena-names'))) if (!maps.has(file)) maps.set(file, name);
   return { labels, maps };
 }
 

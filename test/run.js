@@ -53,6 +53,15 @@ function makeEngine(cooked, running = { value: false }) {
     assert.strictEqual(prettify('star_holo'), 'Star Holo');
   });
 
+  test('arenas are known by name even without a key list', () => {
+    if (!real) return;
+    const { readTexts } = require('../src/main/core/labels');
+    const list = arenas.scanArenas(real, {}, [], readTexts(real, []).maps);
+    const standard = list.filter((a) => a.standard);
+    assert.ok(standard.length >= 55, 'standard arenas without a key list: ' + standard.length);
+    assert.ok(standard.some((a) => a.id === 'stadium_p' && a.name === 'DFH Stadium'));
+  });
+
   test('updates: versions compare, the newest usable release is picked, its SHA-256 is read', () => {
     const { compare, pickRelease, checksum } = require('../src/main/updater');
     assert.ok(compare('0.4.1', '0.4.0') > 0 && compare('v0.10.0', '0.9.9') > 0 && compare('0.4.0', '0.4.0') === 0);
