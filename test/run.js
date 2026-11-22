@@ -907,7 +907,8 @@ function makeEngine(cooked, running = { value: false }) {
       [['UtopiaStadium_P.upk'], ['CS_P.upk', 'CS_Field.upk', 'CS_Grounds.upk', 'CS_OOB.upk', 'CS_OOB2.upk'], ['CS_Stands_00'], ['CS_Grounds_Floor01']],
       // only Forbidden Temple's stadium file fits in Drift Woods (Night): its grass comes, its stands do
       // not, so the woods keep their trees where those stands would be, and their force field
-      [['CHN_Stadium_Field.upk'], ['Woods_Night_P.upk'], ['Woods_Field_Ground'], ['Woods_Dawn_Trees_01', 'Woods_Dawn_Trees_17', 'Tree_Small_001', 'Woods_Field_Walls_Hexes']],
+      // (and its grass goes with its floor: Forbidden Temple's grass comes with its own floor)
+      [['CHN_Stadium_Field.upk'], ['Woods_Night_P.upk'], ['Woods_Field_Ground', 'GroundMeshCollector0'], ['Woods_Dawn_Trees_01', 'Woods_Dawn_Trees_17', 'Tree_Small_001', 'Woods_Field_Walls_Hexes']],
     ];
     let checked = 0;
     for (const [sFiles, pFiles, gone, stay] of pairs) {
@@ -950,6 +951,9 @@ function makeEngine(cooked, running = { value: false }) {
     const P = mapbuild.open(buf, keys);
     const stats = mapbuild.keepSide(P, 'stadium', { gameplay: false, lights: false, part: true, unlit: true });
     assert.ok(stats.unlit > 20 && !stats.lit, JSON.stringify(stats));
+    // the grass over its floor comes too, from whichever of its files holds it (Forbidden Temple's
+    // is in its stadium file): without it the bare floor shows bright stripes
+    if (file === 'CHN_Stadium_Field.upk') assert.ok(mapbuild.inventory(P).some((it) => /^GroundStaticMeshActor/.test(it.cls || '')));
     // written and read back: every kept mesh has its lighting channels initialized and all off
     const again = mapbuild.open(mapbuild.repack(P, Buffer.from(upk.DEFAULT_KEYS[0], 'hex')), keys);
     assert.strictEqual(again.t.exports.length, P.t.exports.length);

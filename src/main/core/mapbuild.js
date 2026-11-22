@@ -500,6 +500,8 @@ function clashes(it, fp) {
 }
 const CLASH_ABOVE = 300;
 const CEILING = 2150; // the pitch's ceiling is at 2044
+// Does the stadium brought in have a floor on the pitch (both halves, at the floor's height)?
+const newFloor = (fp) => !!fp && [[0, 2500], [0, -2500], [2000, 0], [-2000, 0]].every(([x, y]) => fp.has(x, y, 10, 100, 100));
 // Does the stadium brought in have a piece of its own where this piece of the pitch is, at its
 // height? (a floor where the floor is; a force field over the pitch is no floor)
 function replaced(it, fp) {
@@ -563,9 +565,11 @@ function keepSide(P, side, { clear = null, own = null, gameplay = side === 'stad
     else if (helper(it)) keep = gameplay; // boost pad meshes and helper shapes come with the gameplay
     else if (LIGHTS.test(cls)) keep = keepLights;
     else if (ATMOSPHERE.test(cls)) keep = side === 'surroundings';
-    // the pitch's ground detail (close-up grass tufts near the camera): the stadium arena's, from its
-    // main map, or the place arena's grass draws over the new pitch
-    else if (/^GroundStaticMeshActor/.test(cls)) keep = side === 'stadium' && !part;
+    // the pitch's grass (the blades over its floor): it goes with the floor. The stadium's comes from
+    // whichever of its files holds it (Forbidden Temple's and Champions Field's are in their stadium
+    // file: before 0.4.16 only a main map's came, and the bare floor showed bright stripes); the
+    // place's stays only when no new floor comes, or its grass would grow over the new pitch
+    else if (/^GroundStaticMeshActor/.test(cls)) keep = side === 'stadium' || (side === 'surroundings' && !newFloor(clear));
     else if (/collision/i.test(`${it.name} ${it.mesh || ''} ${it.group || ''}`)) keep = gameplay; // from one map only
     else if (side === 'stadium') keep = inStadium(it, own); // strictly the stadium: nothing else of this arena
     else if (!placed(it)) {
