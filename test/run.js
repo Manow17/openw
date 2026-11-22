@@ -489,8 +489,14 @@ function makeEngine(cooked, running = { value: false }) {
     // when it is built (the stadium side keeps its own; the place clears its own and the new one)
     const info = { stadiumFiles: ['beach_p.upk', 'Beach_Field.upk'], placeFiles: ['cs_p.upk', 'CS_Field.upk'], stadiumHolders: new Set(['beach_p.upk']), placeHolders: new Set() };
     p = arenas.mergePlan(beach, cs, all, info);
-    assert.ok(p.ops.every((o) => (o.side === 'surroundings' ? o.ownFiles === info.placeFiles && o.clearFiles === info.stadiumFiles : o.ownFiles === info.stadiumFiles && !o.clearFiles)));
-    assert.deepStrictEqual(arenas.opReads(p.ops.find((o) => o.side === 'surroundings')).slice(-4), ['cs_p.upk', 'CS_Field.upk', 'beach_p.upk', 'Beach_Field.upk'], 'a build reads both footprints');
+    // (the place clears only where the stadium files that load stand: here its stadium file, the one slot)
+    assert.ok(p.ops.every((o) => (o.side === 'surroundings' ? o.ownFiles === info.placeFiles && JSON.stringify(o.clearFiles) === '["Beach_Field.upk"]' : o.ownFiles === info.stadiumFiles && !o.clearFiles)));
+    // the stadium's pieces keep the light baked into them, no lamp of the place lights them live
+    assert.ok(p.ops.every((o) => (o.side === 'stadium' ? o.unlit === true && o.lights === false : !o.unlit && o.lights === true)));
+    // the other way round (no slot in the place): the place's pieces are the ones loaded into the other map
+    const turned = arenas.mergePlan(tenth, arena('eurostadium_p', 'Mannfield', []), [...all]);
+    assert.ok(turned.ops.every((o) => (o.side === 'surroundings' ? o.unlit === true && o.lights === false : o.side === 'empty' || (!o.unlit && o.lights === true))));
+    assert.deepStrictEqual(arenas.opReads(p.ops.find((o) => o.side === 'surroundings')).slice(-4), ['CS_OOB.upk', 'cs_p.upk', 'CS_Field.upk', 'Beach_Field.upk'], 'a build reads both footprints');
     // the place's effects parts are cleared too (Salty Shores' egg crowd, Starbase ARC's goal turrets)
     const arc = arena('arc_standard_p', 'Starbase ARC', ['ARC_Standard_Field.upk', 'ARC_Standard_FX.upk', 'ARC_SFX.upk']);
     assert.ok(arenas.mergePlan(beach, arc, [...all, arc]).ops.some((o) => o.from === 'ARC_Standard_FX.upk' && o.side === 'surroundings' && o.create));
@@ -885,7 +891,7 @@ function makeEngine(cooked, running = { value: false }) {
     assert.ok(checked >= 3, `${checked} arenas checked`);
   }, !real);
 
-  test('a merge of real arenas: nothing of the other arena stands in or around the new stadium, its land stays', () => {
+  test('a merge of real arenas: nothing of the other arena stands in the new stadium, the rest of it and its land stay', () => {
     const keysFile = path.join(process.env.APPDATA || '', 'OpenW', 'keys.txt');
     if (!fs.existsSync(keysFile)) return;
     const keys = upk.parseKeys(fs.readFileSync(keysFile, 'utf8'));
@@ -895,10 +901,13 @@ function makeEngine(cooked, running = { value: false }) {
     const footprint = (files) => { const fp = mapbuild.footprint([]); for (const f of files) { const P = open(f); if (P) mapbuild.footprint([P], fp); } return fp; };
     // [stadium arena's files, place arena's files, pieces of the place that must go, pieces that must stay]
     const pairs = [
-      [['UtopiaStadium_Snow_P.upk'], ['Farm_GRS_P.upk'], ['Bleachers_002', 'Farm_EggPeople_Blue_SM', 'Platform_IVTK', 'Farm_G_FieldGrass', 'Cows_01'], ['Hill_01']],
-      [['EuroStadium_P.upk'], ['Park_P.upk'], ['LombardyTrees_Combined_02', 'Grass_Base'], ['TerrainClose']],
-      [['CS_P.upk', 'CS_Field.upk', 'CS_OOB2.upk'], ['Underwater_P.upk', 'Underwater_Field.upk', 'Underwater_FX.upk', 'Underwater_OOB_foliage.upk'], ['UND_Field', 'UND_GlassWall001'], ['UND_SeaFloor_01']],
-      [['UtopiaStadium_P.upk'], ['CS_P.upk', 'CS_Field.upk', 'CS_Grounds.upk', 'CS_OOB.upk', 'CS_OOB2.upk'], ['Park_BannerScaffold00', 'CS_Stands_00'], ['CS_Grounds_Floor01']],
+      [['UtopiaStadium_Snow_P.upk'], ['Farm_GRS_P.upk'], ['Bleachers_002', 'Farm_EggPeople_Blue_SM', 'Platform_IVTK', 'Farm_G_FieldGrass'], ['Hill_01', 'Fence_012']],
+      [['EuroStadium_P.upk'], ['Park_P.upk'], ['Grass_Base'], ['TerrainClose']],
+      [['CS_P.upk', 'CS_Field.upk'], ['Underwater_P.upk', 'Underwater_Field.upk', 'Underwater_FX.upk', 'Underwater_OOB_foliage.upk'], ['UND_Field'], ['UND_SeaFloor_01']],
+      [['UtopiaStadium_P.upk'], ['CS_P.upk', 'CS_Field.upk', 'CS_Grounds.upk', 'CS_OOB.upk', 'CS_OOB2.upk'], ['CS_Stands_00'], ['CS_Grounds_Floor01']],
+      // only Forbidden Temple's stadium file fits in Drift Woods (Night): its grass comes, its stands do
+      // not, so the woods keep their trees where those stands would be, and their force field
+      [['CHN_Stadium_Field.upk'], ['Woods_Night_P.upk'], ['Woods_Field_Ground'], ['Woods_Dawn_Trees_01', 'Woods_Dawn_Trees_17', 'Tree_Small_001', 'Woods_Field_Walls_Hexes']],
     ];
     let checked = 0;
     for (const [sFiles, pFiles, gone, stay] of pairs) {
@@ -916,9 +925,11 @@ function makeEngine(cooked, running = { value: false }) {
           if (!log[i].kept || !it.box || (it.kind === 'actor' && !it.mesh)) return;
           if (mapbuild.rules.isGround(it) || mapbuild.rules.underlay(it) || mapbuild.rules.atmosphere(it)) return;
           if (/^(EngineMeshes|EditorMeshes|CollisionMeshes)/.test(it.group || '') || /pickup|collision/i.test(`${it.group} ${name}`)) return;
-          // nothing poking into the new stands, nothing inside either stadium's outline
+          // nothing poking into the new stands; nothing of its own stadium but its pitch where the new
+          // stadium brings none (its pitch: on the field, nothing over the ceiling)
+          const pitch = Math.abs(it.box.c.x) + it.box.e.x * 0.5 <= 5600 && Math.abs(it.box.c.y) + it.box.e.y * 0.5 <= 7000 && it.box.c.z + it.box.e.z <= 2150;
+          if (pitch) return;
           assert.ok(!mapbuild.clashes(it, sFp), `${file}: ${name} stands in the new stadium`);
-          assert.ok(!mapbuild.enclosed(it, sFp) && !mapbuild.enclosed(it, pFp), `${file}: ${name} stands inside a stadium`);
           assert.ok(!mapbuild.inStadium(it, pFp), `${file}: ${name} of its own stadium stayed`);
         });
       }
@@ -927,6 +938,28 @@ function makeEngine(cooked, running = { value: false }) {
       checked++;
     }
     assert.ok(checked >= 2, `${checked} pairs checked`);
+  }, !real);
+
+  test('a stadium brought into another arena keeps the light baked into it: no lamp of the other arena lights it live', () => {
+    const keysFile = path.join(process.env.APPDATA || '', 'OpenW', 'keys.txt');
+    const file = ['CHN_Stadium_Field.upk', 'UtopiaStadium_Snow_P.upk', 'Stadium_P.upk'].find((f) => fs.existsSync(path.join(real || '', f)));
+    if (!fs.existsSync(keysFile) || !file) return;
+    const keys = upk.parseKeys(fs.readFileSync(keysFile, 'utf8'));
+    const backup = path.join(process.env.APPDATA, 'OpenW', 'backups', file.toLowerCase());
+    const buf = fs.readFileSync(fs.existsSync(backup) ? backup : path.join(real, file));
+    const P = mapbuild.open(buf, keys);
+    const stats = mapbuild.keepSide(P, 'stadium', { gameplay: false, lights: false, part: true, unlit: true });
+    assert.ok(stats.unlit > 20 && !stats.lit, JSON.stringify(stats));
+    // written and read back: every kept mesh has its lighting channels initialized and all off
+    const again = mapbuild.open(mapbuild.repack(P, Buffer.from(upk.DEFAULT_KEYS[0], 'hex')), keys);
+    assert.strictEqual(again.t.exports.length, P.t.exports.length);
+    let checked = 0;
+    for (const it of mapbuild.inventory(again)) {
+      if (!it.channels || (it.kind === 'actor' && !it.mesh)) continue;
+      assert.deepStrictEqual(it.channels(), ['bInitialized'], `${it.mesh || it.name}`);
+      checked++;
+    }
+    assert.ok(checked > 20, `${checked} pieces checked`);
   }, !real);
 
   test('a map is taken apart and put back together without changing anything else', () => {
@@ -944,7 +977,7 @@ function makeEngine(cooked, running = { value: false }) {
     // one side kept: some meshes hidden, gameplay gone from the surroundings, a part renamed, still readable
     const S = mapbuild.open(buf, keys);
     const log = [];
-    const stats = mapbuild.keepSide(S, 'surroundings', {}, log);
+    const stats = mapbuild.keepSide(S, 'surroundings', { clear: [{ x0: -6000, x1: 6000, y0: -8000, y1: 8000 }] }, log);
     assert.ok(stats.hidden > 20 && stats.kept > 20, JSON.stringify(stats));
     // no gameplay and no lights come along with the outside; sky and fog do
     assert.ok(log.filter((l) => /^(VehiclePickup|Goal|PlayerStart|StaticLightCollectionActor)/.test(l.what)).every((l) => !l.kept));

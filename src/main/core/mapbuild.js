@@ -198,6 +198,44 @@ function tagHeader(P, d, p) {
   return 24 + (p.type === 'StructProperty' || p.type === 'ByteProperty' ? 8 : 0) + (p.type === 'BoolProperty' ? 1 : 0);
 }
 
+/* ---------- lighting ---------- */
+
+// Most lamps of an arena are baked into its own map: each piece there carries the light that fell
+// on it. A piece from another map has never been baked with this arena's lamps, so the game lights
+// it with them live, on top of its own baked light (a stadium brought into Drift Woods (Night) took
+// the colour of its 45 yellow-green lamps). Every lighting channel of such a piece is turned off,
+// so no lamp lights it live: it keeps exactly the light baked into it in its own arena. The channels
+// are bools of its LightingChannels, each changed in place; "initialized" must be on, or the game
+// sets the default channels again (a bool tag of the struct is renamed to it when it has none).
+// Returns true when done, false when the piece has no channels written to change.
+function unlight(P, cd) {
+  const r = tagged(P, cd);
+  const lc = prop(r, 'LightingChannels');
+  if (!lc || lc.type !== 'StructProperty') return false;
+  const value = cd.subarray(lc.at, lc.at + lc.size);
+  const sub = readTags(P.names, value, 0);
+  if (!sub || !sub.props.length || sub.props.some((p) => p.type !== 'BoolProperty')) return false;
+  let init = sub.props.find((p) => p.name === 'bInitialized');
+  if (!init) {
+    const idx = P.names.indexOf('bInitialized');
+    if (idx < 0) return false;
+    init = sub.props[0];
+    value.writeInt32LE(idx, init.at - 25);
+    value.writeInt32LE(0, init.at - 21);
+  }
+  for (const p of sub.props) value[p.at - 1] = p === init ? 1 : 0;
+  return true;
+}
+
+// The lighting channels a component has on (names), or null when it has none written.
+function channelsOf(P, cd) {
+  const lc = prop(tagged(P, cd), 'LightingChannels');
+  if (!lc || lc.type !== 'StructProperty') return null;
+  const value = cd.subarray(lc.at, lc.at + lc.size);
+  const sub = readTags(P.names, value, 0);
+  return sub ? sub.props.filter((p) => p.type === 'BoolProperty' && value[p.at - 1]).map((p) => p.name) : null;
+}
+
 /* ---------- where things are ---------- */
 
 // Placement of a component: Translation, Rotation (yaw is what matters for a stadium) and scale.
@@ -271,6 +309,8 @@ function inventory(P) {
           shape,
           hide: () => cd.writeInt32LE(0, slot.at),
           move: (dz) => shiftZ(P, cd, dz),
+          unlight: () => unlight(P, cd),
+          channels: () => channelsOf(P, cd),
         });
       }
       continue;
@@ -286,7 +326,7 @@ function inventory(P) {
       const sm = prop(tagged(P, cd), 'StaticMesh');
       const obj = sm && sm.type === 'ObjectProperty' ? cd.readInt32LE(sm.at) : 0;
       if (obj) {
-        Object.assign(item, { mesh: named(obj).name, group: named(obj).group, ref: obj, xf: transform(d, r, 'Location', 'DrawScale3D', 'DrawScale') });
+        Object.assign(item, { mesh: named(obj).name, group: named(obj).group, ref: obj, xf: transform(d, r, 'Location', 'DrawScale3D', 'DrawScale'), unlight: () => unlight(P, cd), channels: () => channelsOf(P, cd) });
         const local = meshBounds(P, obj, cache);
         if (local) {
           // a property that is not written has its default: an actor with no Location is at the centre
@@ -359,7 +399,6 @@ const STADIUM = new Set(('stadium stands crowd crowds people fans seat seats ble
   + 'lightcone lightcones lightbar confetti flash flashes flare flares').split(' '));
 const FIELD = { x: 5600, y: 7000 }; // the pitch with its walls, goals and the frame right around them
 const REACH = 26000, TOP = 16000;   // how far out stands, roofs and field lights can stand
-const NEAR = { x: 8500, y: 10000 };  // close around the pitch: an arena's first stands
 const nameWords = (it) => [...words(it.name), ...words(it.mesh)];
 const atmosphere = (it) => [...nameWords(it), ...words(it.group)].some((w) => ATMOSPHERE_WORDS.has(w));
 const scenery = (it) => atmosphere(it) || nameWords(it).some((w) => SCENERY_WORDS.has(w)) || words(it.group).some((w) => SCENERY_GROUPS.has(w)) || /Foliage/.test(it.cls || '');
@@ -451,11 +490,23 @@ function inStadium(it, fp) {
 }
 // Does a piece of the other arena stand where the stadium brought in stands? (a little of it is
 // enough: it would poke through the stands)
+// (inside its stands' own space: between their floor and just over their top, not under a roof's
+// height over them, where trees and hills behind the stands rise)
 function clashes(it, fp) {
   if (!fp || !placed(it) || atmosphere(it)) return false;
   const s = it.shape();
-  if (s) { const r = fp.share(s.pos, s.idx); return r.share > 0.15 || r.area > 400000; }
-  return fp.has(it.box.c.x, it.box.c.y, it.box.c.z);
+  if (s) { const r = fp.share(s.pos, s.idx, { above: CLASH_ABOVE }); return r.share > 0.15 || r.area > 1000000; }
+  return fp.has(it.box.c.x, it.box.c.y, it.box.c.z, undefined, CLASH_ABOVE);
+}
+const CLASH_ABOVE = 300;
+const CEILING = 2150; // the pitch's ceiling is at 2044
+// Does the stadium brought in have a piece of its own where this piece of the pitch is, at its
+// height? (a floor where the floor is; a force field over the pitch is no floor)
+function replaced(it, fp) {
+  if (!fp || !placed(it)) return false;
+  const s = it.shape();
+  if (s) return fp.share(s.pos, s.idx, { below: 100, above: 100 }).share >= 0.5;
+  return fp.has(it.box.c.x, it.box.c.y, it.box.c.z, 100, 100);
 }
 // Is a piece (mostly) inside a stadium's outline, seen from above, and not above all of it?
 function enclosed(it, fp) {
@@ -492,11 +543,13 @@ const LIGHTS = /^(StaticLightCollectionActor|.*Light)$/;
  *                   (`clear`, that stadium's footprint). Its ground, sky and fog stay.
  * own and clear: shapes.Footprint (from footprint()); clear may also be boxes, as merges before
  * 0.4.15 kept it. Without own, this package alone makes the footprint.
+ * unlit: the pieces kept are loaded into another arena's map: no lamp lights them live, they keep
+ * the light baked into them (unlight()); stats.unlit counts them, stats.lit the ones it could not.
  * gameplay: keep the gameplay actors (boost pads, goals, spawns, collision). Exactly one
  * package of a merge has them.
  * Returns counts; `log` (an array) gets one line per thing.
  */
-function keepSide(P, side, { clear = null, own = null, gameplay = side === 'stadium', part = false, lights = null } = {}, log = null) {
+function keepSide(P, side, { clear = null, own = null, gameplay = side === 'stadium', part = false, lights = null, unlit = false } = {}, log = null) {
   const keepLights = lights === null ? side === 'stadium' || gameplay : !!lights;
   const stats = { kept: 0, hidden: 0 };
   if (!own && side !== 'empty') own = footprint([P]);
@@ -525,18 +578,15 @@ function keepSide(P, side, { clear = null, own = null, gameplay = side === 'stad
       // it fits under any stadium (Deadeye Canyon's terrain runs right up to the walls). Ground is low
       // and thin and reaches past the pitch; the pitch itself (named so) goes.
       const ground = isGround(it) || underlay(it);
-      // its own stadium, by the same rules as the one brought in, everything else on its pitch (its
-      // planters and vines would float where its railing was), and whatever stands close around the
-      // pitch, where a stadium's first stands are (Farmstead's egg crowd on its platform is not
-      // called stands). Its sky and fog stay.
-      // (a piece reaching far beyond, a hillside, is judged by what of it stands in the stadium)
-      const near = Math.abs(g.c.x) <= NEAR.x && Math.abs(g.c.y) <= NEAR.y && g.c.z < 6000 && !atmosphere(it)
-        && Math.abs(g.c.x) + g.e.x <= NEAR.x * 1.5 && Math.abs(g.c.y) + g.e.y <= NEAR.y * 1.5;
-      const mine = inStadium(it, own) || (onField(it) && (!atmosphere(it) || stadiumNamed(it))) || near;
-      // where the new stadium stands, nothing of this arena may stand, not even a corner of it; and
-      // nothing inside either stadium's outline (between the pitch and the stands: Champions
-      // Field's banner scaffolds on its plaza, a fence inside the new stadium) but the ground
-      keep = ground || (!mine && !clashes(it, clear) && !enclosed(it, own) && !enclosed(it, clear));
+      // Its own stadium goes, by the same rules as the one brought in. Its pitch itself (floor, walls,
+      // goals: nothing on it rises over the ceiling) goes piece by piece, only where the new stadium
+      // brings a piece of its own: a stadium whose floor is in a file that does not fit leaves this
+      // arena's floor, never a hole. Light poles and the like around the pitch go. Everything
+      // else stays (since 0.4.16: before, whatever stood close around the pitch or inside a
+      // stadium's outline went too, and arenas lost trees and scenery that stood in nobody's way),
+      // but where the new stadium really stands, nothing of this arena may stand.
+      const pitch = onField(it) && !atmosphere(it) && g.c.z + g.e.z <= CEILING;
+      keep = ground || (pitch ? !replaced(it, clear) : !inStadium(it, own) && !(onField(it) && stadiumNamed(it)) && !clashes(it, clear));
       // ground that runs under the pitch often has this arena's own pitch painted on it, at the same
       // height as the new one: lowered a little, the new pitch is always drawn on top
       if (keep && ground && Math.abs(g.c.x) - g.e.x < 4096 && Math.abs(g.c.y) - g.e.y < 5120 && g.c.z + g.e.z > -20) {
@@ -544,6 +594,7 @@ function keepSide(P, side, { clear = null, own = null, gameplay = side === 'stad
       }
     }
     if (!keep) it.hide();
+    else if (unlit && it.unlight) { const done = it.unlight(); stats[done ? 'unlit' : 'lit'] = (stats[done ? 'unlit' : 'lit'] || 0) + 1; }
     stats[keep ? 'kept' : 'hidden']++;
     if (log) log.push({ what: it.kind === 'actor' ? it.cls : it.kind, name: it.mesh || it.name, group: it.group || '', x: it.box ? Math.round(it.box.c.x) : null, y: it.box ? Math.round(it.box.c.y) : null, w: it.box ? Math.round(it.box.e.x) : null, h: it.box ? Math.round(it.box.e.y) : null, z: it.box ? Math.round(it.box.c.z) : null, d: it.box ? Math.round(it.box.e.z) : null, kept: keep });
   }

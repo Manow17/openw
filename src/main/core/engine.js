@@ -188,7 +188,7 @@ class Engine {
     if (!fs.existsSync(from)) throw new EngineError('NO_SUCH_GAME_FILE', `${op.from} is not in the game folder`);
     const opts = {
       gameplay: op.gameplay === undefined ? op.side === 'stadium' : !!op.gameplay, part: !!op.part,
-      lights: op.lights === undefined ? null : !!op.lights,
+      lights: op.lights === undefined ? null : !!op.lights, unlit: !!op.unlit,
     };
     const st = fs.statSync(from);
     const sig = JSON.stringify([from, st.size, st.mtimeMs, op.side, opts, op.ownFiles || null, op.clearFiles || op.clear || null]);

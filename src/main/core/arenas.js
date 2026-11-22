@@ -152,9 +152,14 @@ function mergePlan(stadium, place, all = [], info = null) {
   // rev: how merges are built; one built with older rules is out of date (MERGE_REV)
   const base = { kind: 'build', category: 'map', group, label, rev: MERGE_REV };
   // the stadium arena's stadium pieces, from one of its files (by its stadium's footprint: mapbuild.js)
-  const stadiumOf = (from, extra = {}) => ({ ...base, from, side: 'stadium', ownFiles: sFiles, gameplay: false, lights: false, part: from !== stadium.file, ...extra });
-  // place's outside, from one of its files: its own stadium out, and nothing where the new stadium stands
-  const outsideOf = (from, extra = {}) => ({ ...base, from, side: 'surroundings', ownFiles: pFiles, clearFiles: sFiles, gameplay: false, lights: true, part: from !== place.file, ...extra });
+  // (unlit: loaded into the place's map, its pieces keep the light baked into them in their own arena,
+  // and no lamp of the place lights them live)
+  const stadiumOf = (from, extra = {}) => ({ ...base, from, side: 'stadium', ownFiles: sFiles, gameplay: false, lights: false, unlit: true, part: from !== stadium.file, ...extra });
+  // place's outside, from one of its files: its own stadium out, and nothing where the new stadium
+  // stands. Cleared is only where the stadium files that load stand (cFiles): a part of the stadium
+  // that does not fit leaves the place's trees where it would have stood.
+  let cFiles = sFiles;
+  const outsideOf = (from, extra = {}) => ({ ...base, from, side: 'surroundings', ownFiles: pFiles, clearFiles: cFiles, gameplay: false, lights: true, part: from !== place.file, ...extra });
 
   // where the stadium arena's stadium is: its stadium file first (newer arenas keep the stands
   // there), its main map, and parts that hold some of it (Champions Field's upper ring is in CS_OOB2)
@@ -171,6 +176,7 @@ function mergePlan(stadium, place, all = [], info = null) {
     const renames = {};
     const assigned = new Map();
     slots.forEach((slot, i) => { if (sources[i]) assigned.set(slot, sources[i]); });
+    cFiles = [...new Set(assigned.values())];
     pParts.forEach((p, i) => {
       const source = assigned.get(p);
       let op = null;
@@ -199,6 +205,7 @@ function mergePlan(stadium, place, all = [], info = null) {
   if (!sParts.length) return { how: 'none', reason: `${stadium.name} and ${place.name} are each one file with no parts, so there is nowhere to load one into the other.` };
   const pSources = [place.file, ...pParts.filter((p) => p.kind === 'surroundings' || p.kind === 'effects').map((p) => p.file)];
   const free = sParts.filter((p) => p.kind === 'audio' || !holds(info && info.stadiumHolders, p.file, !!stadium.field && p.kind !== 'effects'));
+  cFiles = [stadium.file, ...sParts.filter((p) => !free.includes(p)).map((p) => p.file)];
   const ops = [];
   const renames = {};
   const assigned = new Map();
@@ -208,11 +215,13 @@ function mergePlan(stadium, place, all = [], info = null) {
     if (!source && slot.kind === 'audio') return;
     const file = newFile(i, slot);
     renames[name(slot)] = file.replace(/\.upk$/i, '');
-    ops.push(source ? { ...outsideOf(source), gameFile: file, create: true }
+    // (the stadium arena's map is the base here: the place's pieces are the ones loaded into another
+    // map, so they keep their own baked light, without the place's lamps lighting the stadium live)
+    ops.push(source ? { ...outsideOf(source), gameFile: file, create: true, lights: false, unlit: true }
       : free.includes(slot) ? { ...stadiumOf(slot.file), side: 'empty', gameFile: file, create: true }
-        : { ...stadiumOf(slot.file), lights: true, gameFile: file, create: true });
+        : { ...stadiumOf(slot.file), lights: true, unlit: false, gameFile: file, create: true });
   });
-  ops.push({ ...stadiumOf(stadium.file), gameFile: place.file, gameplay: true, lights: true, part: false, renames });
+  ops.push({ ...stadiumOf(stadium.file), gameFile: place.file, gameplay: true, lights: true, unlit: false, part: false, renames });
   return {
     // the place's main file becomes the other arena's map: Rocket League checks each arena file
     // against the server online ("version mismatch"), so this one is for offline matches
@@ -224,8 +233,10 @@ function mergePlan(stadium, place, all = [], info = null) {
 // 0.4.14, when no plants or garden decoration come along either and the other arena clears
 // everything close around its pitch (its own pitch floor and crowd too); 4 since 0.4.15, when
 // the stadium is read from the real shapes of its pieces (its footprint) and the other arena
-// clears everything that stands where it stands.
-const MERGE_REV = 4;
+// clears everything that stands where it stands; 5 since 0.4.16, when the stadium keeps the light
+// baked into it (no lamp of the other arena lights it live) and the other arena loses only its own
+// stadium, its pitch where the new one brings a piece, and what stands in the stadium that loads.
+const MERGE_REV = 5;
 // A merge op built with older rules (more than the stadium could come along): to be built again.
 const oldMerge = (op) => !!op && op.kind === 'build' && (op.rev || 0) < MERGE_REV;
 
