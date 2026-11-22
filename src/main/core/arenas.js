@@ -215,8 +215,10 @@ function mergePlan(stadium, place, all = [], info = null) {
     note: `${place.name} has no stadium or sound file to load ${stadium.name}’s stadium in, so ${stadium.name}’s map is used with ${place.name}’s outside and sky around it; its light and fog are ${stadium.name}’s.`,
   };
 }
-// How merges are built: 2 since 0.4.13, when only strictly the stadium comes along.
-const MERGE_REV = 2;
+// How merges are built: 2 since 0.4.13, when only strictly the stadium comes along; 3 since
+// 0.4.14, when no plants or garden decoration come along either and the other arena clears
+// everything close around its pitch (its own pitch floor and crowd too).
+const MERGE_REV = 3;
 // A merge op built with older rules (more than the stadium could come along): to be built again.
 const oldMerge = (op) => !!op && op.kind === 'build' && (op.rev || 0) < MERGE_REV;
 

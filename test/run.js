@@ -770,7 +770,16 @@ function makeEngine(cooked, running = { value: false }) {
     // on the pitch: the stadium, whatever the arena calls its packages
     yes(mesh('Farm_G_FieldGrass', 'Farm_GRS_Assets.Meshes', at(0, 0, 0, 4096, 5120, 10)), 'Farmstead\'s pitch');
     yes(mesh('Mall_Field_Walls_Hex', 'Mall_OOB_Assets_01.Meshes', at(4096, 0, 1000, 40, 5000, 1000)), 'an OOB package holding the field');
-    yes(mesh('Utopia_FieldRailingBushes_SM', 'UtopiaStadium_Assets_B.Meshes', at(4300, 0, 300, 100, 3000, 200)), 'planters on the field railing');
+    yes(mesh('UTO_GrassField_Base', 'UtopiaStadium_Assets_B.Meshes', at(0, 2624, 0, 3584, 2496, 0)), 'the grass of the pitch');
+    // plants and garden decoration never, not even on the pitch (Utopia's topiaries stood on the other arena's grass)
+    no(mesh('Utopia_FieldRailingBushes_SM', 'UtopiaStadium_Assets_B.Meshes', at(4300, 0, 300, 100, 3000, 200)), 'bushes on the field railing');
+    no(mesh('UTO_TopiaryStadium_SM', 'UtopiaStadium_Assets.Meshes', at(6105, 3649, 407, 3525, 3099, 234)), 'a topiary, even named stadium');
+    no(mesh('Pots4', 'UtopiaCombined_Assets.SM', at(3, -6274, 570, 1987, 123, 316)), 'flower pots');
+    no(mesh('CMB_CandyCanes001', 'UtopiaSnow_Assets.Combined', at(-979, -503, 400, 7297, 8300, 381)), 'decoration');
+    no(mesh('Utopia_FieldRailingGrass_SM', 'UtopiaStadium_Assets_B.Meshes', at(3352, -2732, 278, 1290, 2732, 0)), 'grass that is not the pitch');
+    no(mesh('CylinderSheet', 'UtopiaSnow_Assets.Meshes', at(16, 0, 3568, 8192, 8192, 2560)), 'a weather sheet');
+    no(mesh('BoostPad_Small', 'Pickup_Boost', at(1792, -4180, 9, 48, 44, 3)), 'boost pads come with the gameplay, from the other arena');
+    no(mesh('Cube', 'EngineMeshes', at(0, 0, 790, 50, 50, 50)), 'the helper shapes of the game');
     no(mesh('LombardyPoplar_Mini', 'Trees.Meshes', at(4500, 6000, 300, 300, 300, 600)), 'never a tree');
     no(mesh('StadiumFogRing', 'EuroStadium_Assets.Meshes', at(0, 0, 500, 5000, 5000, 100)), 'never fog');
     no(mesh('ConcreteBase', 'Park_Assets.Meshes', at(0, 0, -48, 5120, 6656, 16)), 'never the ground: the other arena keeps its own');
@@ -797,18 +806,17 @@ function makeEngine(cooked, running = { value: false }) {
     const original = (f) => (fs.existsSync(path.join(backups, f.toLowerCase())) ? path.join(backups, f.toLowerCase()) : path.join(real, f));
     // whole words, as the game names things ("StreetSignArrows" has no tree in it)
     const wordsOf = (t) => String(t).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z]+/);
-    const SCENERY = { test: (t) => wordsOf(t).some((w) => /^(trees?|poplars?|leafy|bush(es)?|rocks?|dunes?|mountains?|hills?|terrain|cliffs?|skyscrapers?|buildings?|city|statue|monorail|moai|planets?|clouds?|skydome|skysphere)$/.test(w)) };
+    const SCENERY = { test: (t) => wordsOf(t).some((w) => /^(trees?|poplars?|leafy|bush(es)?|topiary|rocks?|dunes?|mountains?|hills?|terrain|cliffs?|skyscrapers?|buildings?|city|statue|monorail|moai|planets?|clouds?|skydome|skysphere)$/.test(w)) };
     let checked = 0;
-    for (const file of ['Park_Snowy_P.upk', 'Stadium_P.upk', 'Wasteland_GRS_P.upk', 'Mall_Day_P.upk', 'Woods_P.upk', 'UtopiaStadium_P.upk', 'Farm_P.upk', 'CS_Field.upk']) {
+    for (const file of ['Park_Snowy_P.upk', 'Stadium_P.upk', 'Wasteland_GRS_P.upk', 'Mall_Day_P.upk', 'Woods_P.upk', 'UtopiaStadium_P.upk', 'UtopiaStadium_Snow_P.upk', 'Farm_P.upk', 'CS_Field.upk']) {
       if (!fs.existsSync(path.join(real, file))) continue;
       let P;
       try { P = mapbuild.open(fs.readFileSync(original(file)), keys); } catch { continue; } // needs a key list
       const log = [];
       mapbuild.keepSide(P, 'stadium', { gameplay: false, lights: false, part: /_Field/.test(file) }, log);
       const kept = log.filter((l) => l.kept && l.what !== 'GroundStaticMeshActor_TA');
-      // (planters on a field's own railing, like Utopia's, are part of its field)
-      const scenery = kept.filter((l) => SCENERY.test(`${l.name} ${l.group}`) && !/stadium/i.test(l.name)
-        && !(/bush/i.test(l.name) && /field/i.test(l.name) && Math.abs(l.x) <= 5600 && Math.abs(l.y) <= 7000));
+      const scenery = kept.filter((l) => SCENERY.test(`${l.name} ${l.group}`) && !/stadium/i.test(l.name));
+      assert.ok(!kept.some((l) => wordsOf(l.name).some((w) => /^(topiary|bush(es)?|pots?|planters?|vines?|candy)$/.test(w))), `${file}: plants or garden decoration came along`);
       assert.deepStrictEqual(scenery.map((l) => `${l.group}.${l.name}`), [], `${file}: scenery came along`);
       assert.ok(kept.every((l) => l.x !== null), `${file}: a piece with no position came along`);
       const onPitch = kept.filter((l) => Math.abs(l.x) <= 4096 && Math.abs(l.y) <= 5120);

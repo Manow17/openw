@@ -299,8 +299,12 @@ function inventory(P) {
 const words = (text) => String(text || '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z]+/).filter(Boolean);
 // atmosphere: never part of a stadium, wherever it is (fog over the pitch is the arena's weather)
 const ATMOSPHERE_WORDS = new Set(('fog fogs mist haze cloud clouds sky skydome skybox skysphere skyline planet planets moon sun stars galaxy nebula aurora borealis '
-  + 'smoke dust sandstorm storm snowfall rain weather sunshaft shaft godray godrays').split(' '));
-const TREE_WORDS = new Set('tree trees poplar poplars leafy pine pines palm palms cypress'.split(' '));
+  + 'smoke dust sandstorm storm snowfall rain weather sunshaft shaft godray godrays sheet sheets').split(' '));
+// plants and garden decoration: never part of a stadium, not even on the pitch (Utopia's topiaries,
+// planters and vines stood on the other arena's grass); grass only as the pitch surface itself
+const TREE_WORDS = new Set(('tree trees poplar poplars leafy pine pines palm palms cypress bush bushes shrub shrubs plant plants planter planters topiary '
+  + 'hedge hedges ivy vine vines flower flowers foliage pot pots corn cactus candy cane canes wreath garland').split(' '));
+const plantlike = (it) => nameWords(it).some((w) => TREE_WORDS.has(w)) || (nameWords(it).includes('grass') && it.box && it.box.c.z + it.box.e.z > 60);
 // scenery: vetoes a stadium-named piece away from the pitch (by its own name)
 const SCENERY_WORDS = new Set([...TREE_WORDS, ...('bush bushes shrub shrubs plant plants foliage flower flowers hedge hedges ivy vine vines rock rocks boulder boulders '
   + 'cliff cliffs dune dunes mountain mountains hill hills terrain landscape mesa water ocean sea waves river lake pond waterfall building buildings skyscraper '
@@ -312,11 +316,12 @@ const SCENERY_GROUPS = new Set('trees foliage plants rocks mountains hills terra
 // what names a stadium part away from the pitch (on it, everything is stadium): the stands, the crowd,
 // the stadium itself, and what hangs on them. Generic words (light, wall, roof, glass, cone, stand)
 // are not enough there: a mall's food court has walls and a banana stand, a park has lamp posts.
-const STADIUM = new Set(('stadium stands crowd crowds seat seats bleacher bleachers tribune grandstand grandstands spectator spectators audience tifo '
+const STADIUM = new Set(('stadium stands crowd crowds people fans seat seats bleacher bleachers tribune grandstand grandstands spectator spectators audience tifo '
   + 'coliseum arena field pitch goal goals station banner banners flag flags scaffold jumbotron scoreboard screen floodlight floodlights '
   + 'lightcone lightcones lightbar confetti flash flashes flare flares').split(' '));
 const FIELD = { x: 5600, y: 7000 }; // the pitch with its walls, goals and the frame right around them
 const REACH = 26000, TOP = 16000;   // how far out stands, roofs and field lights can stand
+const NEAR = { x: 8500, y: 10000 };  // close around the pitch: an arena's first stands
 const nameWords = (it) => [...words(it.name), ...words(it.mesh)];
 const atmosphere = (it) => [...nameWords(it), ...words(it.group)].some((w) => ATMOSPHERE_WORDS.has(w));
 const scenery = (it) => atmosphere(it) || nameWords(it).some((w) => SCENERY_WORDS.has(w)) || words(it.group).some((w) => SCENERY_GROUPS.has(w)) || /Foliage/.test(it.cls || '');
@@ -327,13 +332,15 @@ const onField = (it) => placed(it) && Math.abs(it.box.c.x) + it.box.e.x * 0.5 <=
 // ground: low, thin and reaching past the pitch. Every standard arena's ground fits under any
 // stadium, so an arena keeps its own and never gets the other's.
 const isGround = (it) => { const g = it.box; return placed(it) && g.e.z < 300 && g.c.z - g.e.z < 100 && g.c.z + g.e.z < 600 && (g.e.x > PITCH.x || g.e.y > PITCH.y); };
+// the game's own helper shapes (a cube, a sphere) and the boost pads' meshes: gameplay, from the place arena
+const helper = (it) => /^EngineMeshes/i.test(it.group || '') || words(it.group).includes('pickup');
 function isStadium(it) {
-  if (!placed(it) || atmosphere(it) || /Foliage/.test(it.cls || '')) return false;
+  if (!placed(it) || atmosphere(it) || plantlike(it) || helper(it) || /Foliage/.test(it.cls || '')) return false;
   if (isGround(it)) return false; // the other arena keeps its own ground, whatever this one calls it
   // other actors (moving meshes, sounds, ...) only when they are a mesh, or a flare on the pitch
   if (it.kind === 'actor' && !it.mesh && !(/LensFlare|Emitter/.test(it.cls) && onField(it))) return false;
-  // on the pitch, with its walls and goals: the stadium, whatever its name (but no trees)
-  if (onField(it)) return !nameWords(it).some((w) => TREE_WORDS.has(w));
+  // on the pitch, with its walls and goals: the stadium, whatever its name
+  if (onField(it)) return true;
   // further out: only pieces named as stadium parts, never scenery, within reach of the pitch
   const { c } = it.box;
   return stadiumNamed(it) && !scenery(it) && Math.abs(c.x) <= REACH && Math.abs(c.y) <= REACH && c.z <= TOP;
@@ -428,7 +435,9 @@ function keepSide(P, side, { region = DEFAULT_REGION, clear = [], gameplay = sid
     let keep;
     const cls = it.kind === 'actor' ? it.cls : '';
     if (side === 'empty') keep = false; // a part that must load nothing
-    else if (GAMEPLAY.test(cls)) keep = gameplay;
+    // (a DecalBlockingActor holding the pitch floor is a piece of the pitch, not gameplay)
+    else if (GAMEPLAY.test(cls) && !(it.mesh && /^DecalBlocking/.test(cls))) keep = gameplay;
+    else if (helper(it)) keep = gameplay; // boost pad meshes and helper shapes come with the gameplay
     else if (LIGHTS.test(cls)) keep = keepLights;
     else if (ATMOSPHERE.test(cls)) keep = side === 'surroundings';
     // the pitch's ground detail (close-up grass tufts near the camera): the stadium arena's, from its
@@ -446,8 +455,12 @@ function keepSide(P, side, { region = DEFAULT_REGION, clear = [], gameplay = sid
       // it fits under any stadium (Deadeye Canyon's terrain runs right up to the walls). Ground is low
       // and thin and reaches past the pitch; the pitch itself (named so) goes.
       const ground = isGround(it);
-      // its own stadium, by the same rules as the one brought in, and fog or lights hanging over its pitch
-      const own = isStadium(it) || (onField(it) && stadiumNamed(it));
+      // its own stadium, by the same rules as the one brought in, everything else on its pitch (its
+      // planters and vines would float where its railing was), and whatever stands close around the
+      // pitch, where a stadium's first stands are (Farmstead's egg crowd on its platform is not
+      // called stands). Its sky and fog stay.
+      const near = Math.abs(g.c.x) <= NEAR.x && Math.abs(g.c.y) <= NEAR.y && g.c.z < 6000 && !atmosphere(it);
+      const own = isStadium(it) || (onField(it) && (!atmosphere(it) || stadiumNamed(it))) || near;
       // where the new stadium's pieces stand, nothing of this arena may stand (a combined mesh far
       // bigger than all of them, like a whole terrain in one, only goes when it is mostly inside)
       const huge = !flat(g) && (g.e.x > clearReach.x * 1.2 || g.e.y > clearReach.y * 1.2);
