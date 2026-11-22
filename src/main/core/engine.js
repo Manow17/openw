@@ -187,14 +187,19 @@ class Engine {
     const from = this.pristine(op.from);
     if (!fs.existsSync(from)) throw new EngineError('NO_SUCH_GAME_FILE', `${op.from} is not in the game folder`);
     const opts = {
-      region: op.region || mapbuild.DEFAULT_REGION, clear: op.clear || [],
       gameplay: op.gameplay === undefined ? op.side === 'stadium' : !!op.gameplay, part: !!op.part,
       lights: op.lights === undefined ? null : !!op.lights,
     };
     const st = fs.statSync(from);
-    const sig = JSON.stringify([from, st.size, st.mtimeMs, op.side, opts]);
+    const sig = JSON.stringify([from, st.size, st.mtimeMs, op.side, opts, op.ownFiles || null, op.clearFiles || op.clear || null]);
     if (!this.lastBuild || this.lastBuild.sig !== sig) {
       this.lastBuild = null; // the previous one goes before the next is read
+      // where this arena's stadium stands, and where the stadium brought in stands (merges before
+      // 0.4.15 kept boxes for the latter)
+      if (op.side !== 'empty') {
+        opts.own = this.footprintOf(op.ownFiles);
+        opts.clear = op.clearFiles ? this.footprintOf(op.clearFiles) : op.clear || null;
+      }
       const pkg = readable(op.from, () => mapbuild.open(fs.readFileSync(from), this.getKeys()));
       mapbuild.keepSide(pkg, op.side, opts);
       this.lastBuild = { sig, pkg, zipped: mapbuild.zipChunks(pkg) };
@@ -203,6 +208,25 @@ class Engine {
     this.forgetBuild = setTimeout(() => { this.lastBuild = null; }, 10000);
     if (this.forgetBuild.unref) this.forgetBuild.unref();
     return this.lastBuild;
+  }
+
+  // An arena's stadium footprint (mapbuild.footprint) from its files' originals, read one at a
+  // time. The last few are kept: every match clears the same stadium from up to 60 arenas.
+  footprintOf(files) {
+    if (!Array.isArray(files) || !files.length) return null;
+    for (const f of files) if (typeof f !== 'string' || path.basename(f) !== f) throw new EngineError('BAD_OP', 'Invalid source file name');
+    const sig = JSON.stringify(files.map((f) => { const p = this.pristine(f); const st = fs.existsSync(p) ? fs.statSync(p) : null; return [f, st && st.size, st && st.mtimeMs]; }));
+    if (!this.footprints) this.footprints = new Map();
+    if (!this.footprints.has(sig)) {
+      const fp = mapbuild.footprint([]);
+      for (const f of files) {
+        const p = this.pristine(f);
+        if (fs.existsSync(p)) mapbuild.footprint([readable(f, () => mapbuild.open(fs.readFileSync(p), this.getKeys()))], fp);
+      }
+      this.footprints.set(sig, fp);
+      if (this.footprints.size > 4) this.footprints.delete(this.footprints.keys().next().value);
+    }
+    return this.footprints.get(sig);
   }
 
   // Run everything that was queued while the game was open, one file at a time, so OpenW stays

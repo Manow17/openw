@@ -16,6 +16,7 @@ const { Store } = require('../src/main/core/store');
 const { Maps, MAP_SLOT } = require('../src/main/core/library');
 const arenas = require('../src/main/core/arenas');
 const mapbuild = require('../src/main/core/mapbuild');
+const shapes = require('../src/main/core/shapes');
 const { readLabels, readTexts, applyLabels } = require('../src/main/core/labels');
 
 const sha = (f) => crypto.createHash('sha1').update(fs.readFileSync(f)).digest('hex');
@@ -484,12 +485,16 @@ function makeEngine(cooked, running = { value: false }) {
     assert.deepStrictEqual(built(p), [['new', 'eurostadium_p.upk', 'surroundings', true, false], ['eurostadium_p.upk', 'stadium_10a_p.upk', 'stadium', false, true]]);
     assert.match(p.note, /light and fog/);
     assert.strictEqual(arenas.mergePlan(mann, arena('eurostadium_dusk_p', 'Mannfield (Dusk)', []), all).how, 'none');
-    // with what was read from the maps: each side gets the right stadium region to keep or to clear
-    const R = [{ x0: -6000, x1: 6000, y0: -8000, y1: 8000 }], R2 = [{ x0: -5000, x1: 5000, y0: -7000, y1: 7000 }];
-    p = arenas.mergePlan(beach, cs, all, { stadiumRegion: R, placeRegion: R2, stadiumHolders: new Set(['beach_p.upk']), placeHolders: new Set() });
-    // (the stadium side needs no region since 0.4.13: what is stadium is decided piece by piece; the
-    // place clears where the stadium's pieces stand)
-    assert.ok(p.ops.every((o) => (o.side === 'stadium' ? o.region === null && o.clear.length === 0 : o.clear === R)));
+    // with what was read from the maps: each side reads its stadium's footprint from that arena's files
+    // when it is built (the stadium side keeps its own; the place clears its own and the new one)
+    const info = { stadiumFiles: ['beach_p.upk', 'Beach_Field.upk'], placeFiles: ['cs_p.upk', 'CS_Field.upk'], stadiumHolders: new Set(['beach_p.upk']), placeHolders: new Set() };
+    p = arenas.mergePlan(beach, cs, all, info);
+    assert.ok(p.ops.every((o) => (o.side === 'surroundings' ? o.ownFiles === info.placeFiles && o.clearFiles === info.stadiumFiles : o.ownFiles === info.stadiumFiles && !o.clearFiles)));
+    assert.deepStrictEqual(arenas.opReads(p.ops.find((o) => o.side === 'surroundings')).slice(-4), ['cs_p.upk', 'CS_Field.upk', 'beach_p.upk', 'Beach_Field.upk'], 'a build reads both footprints');
+    // the place's effects parts are cleared too (Salty Shores' egg crowd, Starbase ARC's goal turrets)
+    const arc = arena('arc_standard_p', 'Starbase ARC', ['ARC_Standard_Field.upk', 'ARC_Standard_FX.upk', 'ARC_SFX.upk']);
+    assert.ok(arenas.mergePlan(beach, arc, [...all, arc]).ops.some((o) => o.from === 'ARC_Standard_FX.upk' && o.side === 'surroundings' && o.create));
+    assert.deepStrictEqual(arenas.arenaFiles(arc), ['arc_standard_p.upk', 'ARC_Standard_Field.upk', 'ARC_Standard_FX.upk']);
     assert.ok(p.ops.every((o) => o.rev === arenas.MERGE_REV) && !arenas.oldMerge(p.ops[0]) && arenas.oldMerge({ kind: 'build' }));
     assert.ok(p.ops.some((o) => o.from === 'CS_OOB.upk'), 'an outside part is filtered even without stadium pieces, to clear the new stadium');
     // every file of one merge shares a group, so it is undone as one
@@ -704,8 +709,8 @@ function makeEngine(cooked, running = { value: false }) {
     const P = mapbuild.open(buf, keys);
     const before = mapbuild.inventory(P).find((i) => i.name === 'OL_Terrain_Ground_Main');
     const pitch = [{ x0: -4700, x1: 4700, y0: -6400, y1: 6400 }];
-    const stats = mapbuild.keepSide(P, 'surroundings', { region: pitch, clear: pitch, part: true, lights: true });
-    assert.strictEqual(stats.lowered, 1);
+    const stats = mapbuild.keepSide(P, 'surroundings', { clear: pitch, part: true, lights: true });
+    assert.ok(stats.lowered >= 1);
     const again = mapbuild.open(mapbuild.repack(P, Buffer.from(upk.DEFAULT_KEYS[0], 'hex')), keys);
     const after = mapbuild.inventory(again).find((i) => i.name === 'OL_Terrain_Ground_Main');
     assert.strictEqual(Math.round(after.box.c.z), Math.round(before.box.c.z) - 25);
@@ -763,40 +768,91 @@ function makeEngine(cooked, running = { value: false }) {
     assert.ok(!ops.some((o) => o.create && fs.existsSync(path.join(dir, o.gameFile))));
   }, !real);
 
-  test('strictly the stadium: what counts, piece by piece', () => {
-    const at = (x, y, z, ex, ey, ez) => ({ c: { x, y, z }, e: { x: ex, y: ey, z: ez } });
-    const mesh = (name, group, box) => ({ kind: 'mesh', name, group, box, known: true });
-    const yes = (it, why) => assert.ok(mapbuild.isStadium(it), why), no = (it, why) => assert.ok(!mapbuild.isStadium(it), why);
-    // on the pitch: the stadium, whatever the arena calls its packages
-    yes(mesh('Farm_G_FieldGrass', 'Farm_GRS_Assets.Meshes', at(0, 0, 0, 4096, 5120, 10)), 'Farmstead\'s pitch');
-    yes(mesh('Mall_Field_Walls_Hex', 'Mall_OOB_Assets_01.Meshes', at(4096, 0, 1000, 40, 5000, 1000)), 'an OOB package holding the field');
-    yes(mesh('UTO_GrassField_Base', 'UtopiaStadium_Assets_B.Meshes', at(0, 2624, 0, 3584, 2496, 0)), 'the grass of the pitch');
-    // plants and garden decoration never, not even on the pitch (Utopia's topiaries stood on the other arena's grass)
-    no(mesh('Utopia_FieldRailingBushes_SM', 'UtopiaStadium_Assets_B.Meshes', at(4300, 0, 300, 100, 3000, 200)), 'bushes on the field railing');
-    no(mesh('UTO_TopiaryStadium_SM', 'UtopiaStadium_Assets.Meshes', at(6105, 3649, 407, 3525, 3099, 234)), 'a topiary, even named stadium');
-    no(mesh('Pots4', 'UtopiaCombined_Assets.SM', at(3, -6274, 570, 1987, 123, 316)), 'flower pots');
-    no(mesh('CMB_CandyCanes001', 'UtopiaSnow_Assets.Combined', at(-979, -503, 400, 7297, 8300, 381)), 'decoration');
-    no(mesh('Utopia_FieldRailingGrass_SM', 'UtopiaStadium_Assets_B.Meshes', at(3352, -2732, 278, 1290, 2732, 0)), 'grass that is not the pitch');
-    no(mesh('CylinderSheet', 'UtopiaSnow_Assets.Meshes', at(16, 0, 3568, 8192, 8192, 2560)), 'a weather sheet');
-    no(mesh('BoostPad_Small', 'Pickup_Boost', at(1792, -4180, 9, 48, 44, 3)), 'boost pads come with the gameplay, from the other arena');
-    no(mesh('Cube', 'EngineMeshes', at(0, 0, 790, 50, 50, 50)), 'the helper shapes of the game');
-    no(mesh('LombardyPoplar_Mini', 'Trees.Meshes', at(4500, 6000, 300, 300, 300, 600)), 'never a tree');
-    no(mesh('StadiumFogRing', 'EuroStadium_Assets.Meshes', at(0, 0, 500, 5000, 5000, 100)), 'never fog');
-    no(mesh('ConcreteBase', 'Park_Assets.Meshes', at(0, 0, -48, 5120, 6656, 16)), 'never the ground: the other arena keeps its own');
-    no(mesh('PA_Stadium_Ground_01', 'Paname.Meshes', at(0, 0, 0, 12000, 15000, 50)), 'not even ground named stadium');
-    // away from the pitch: only pieces named as stadium parts, never scenery, within reach
-    yes(mesh('Crowd_01', 'FutureStadium_Assets.Meshes', at(-5400, 15300, 6700, 10000, 5000, 3000)), 'the crowd');
-    yes(mesh('Stadium_Base', 'FutureStadium_Assets.Meshes', at(-1800, 11478, 2856, 29272, 11670, 6872)), 'the stadium itself, however big');
-    yes(mesh('Station_Stands_Upper', 'TrainStation_Assets.Meshes', at(0, 9000, 2000, 6000, 2000, 1500)), 'Urban Central\'s stands: its package name is no veto');
-    no(mesh('Utopia_Chair001', 'UtopiaStadium_Assets.Meshes', at(9000, 9000, 800, 50, 50, 60)), 'a food court chair is no stadium, whatever package it is in');
-    no(mesh('Mall_FoodCourt_Walls_01', 'Mall_Assets.Meshes', at(12000, 0, 2000, 3000, 3000, 2000)), 'walls of a mall are no stadium');
-    no(mesh('LeafyTrees_01_Combined', 'Stadium_Assets.Meshes', at(4285, -15828, 6548, 15174, 5783, 2740)), 'trees in a stadium package');
-    no(mesh('Woods_PowerLine_Light_01', 'Woods_Assets.Meshes', at(15000, 0, 3000, 200, 200, 2000)), 'a lamp post is no stadium');
-    no(mesh('Crowd_02', 'FutureStadium_Assets.Meshes', at(40000, 0, 2000, 3000, 3000, 2000)), 'too far out');
-    no(mesh('Stadium_Lights', 'X', at(0, 9000, 30000, 2000, 2000, 500)), 'too high up');
-    // and nothing whose place is not known, nor actors that are no mesh
-    no({ kind: 'mesh', name: 'Goal_Frame', group: 'X', box: null, known: false }, 'no position');
-    no({ kind: 'actor', cls: 'InterpActor', name: 'InterpActor_4', box: at(0, 0, 3000, 0, 0, 0), known: true }, 'a moving thing that is no mesh');
+  test('mesh shapes are read from the map itself, past their vertex colours', () => {
+    const f32 = (...v) => { const b = Buffer.alloc(v.length * 4); v.forEach((x, i) => b.writeFloatLE(x, i * 4)); return b; };
+    const i32 = (...v) => { const b = Buffer.alloc(v.length * 4); v.forEach((x, i) => b.writeInt32LE(x, i * 4)); return b; };
+    // bounds (centre, extent, radius), something else, positions (stride, count, element size, count, data),
+    // vertex colours (all zero: they read like triangles), then the triangles
+    const d = Buffer.concat([f32(50, 50, 0, 50, 50, 1, 71), i32(7, 7), i32(12, 3, 12, 3), f32(0, 0, 0, 100, 0, 0, 0, 100, 0), i32(4, 3), Buffer.alloc(12), i32(2, 3), Buffer.from([0, 0, 1, 0, 2, 0])]);
+    const s = shapes.meshShape(d, 0);
+    assert.deepStrictEqual([...s.pos], [0, 0, 0, 100, 0, 0, 0, 100, 0]);
+    assert.deepStrictEqual([...s.idx], [0, 1, 2]);
+    // positions outside the bounds are no positions of this mesh
+    assert.strictEqual(shapes.meshShape(Buffer.concat([f32(0, 0, 0, 1, 1, 1, 2), i32(12, 3, 12, 3), f32(0, 0, 0, 900, 0, 0, 0, 1, 0), i32(2, 3), Buffer.from([0, 0, 1, 0, 2, 0])]), 0), null);
+    // placed in the world: scaled, turned (a quarter turn of yaw) and moved
+    const w = shapes.place(s, { t: { x: 10, y: 0, z: 5 }, rot: { p: 0, y: 16384, r: 0 }, s: { x: 2, y: 2, z: 2 } });
+    assert.deepStrictEqual([...w].map((v) => Math.round(v)), [10, 0, 5, 10, 200, 5, -190, 0, 5]);
+  });
+
+  // a box-shaped piece for the tests below (a real shape: 12 triangles)
+  const boxShape = ({ c, e }) => {
+    const pos = new Float32Array(24);
+    let k = 0;
+    for (const x of [c.x - e.x, c.x + e.x]) for (const y of [c.y - e.y, c.y + e.y]) for (const z of [c.z - e.z, c.z + e.z]) { pos[k++] = x; pos[k++] = y; pos[k++] = z; }
+    const faces = [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]];
+    return { pos, idx: new Uint32Array(faces.flatMap(([a, b, q, r]) => [a, b, q, a, q, r])) };
+  };
+  const at = (x, y, z, ex, ey, ez) => ({ c: { x, y, z }, e: { x: ex, y: ey, z: ez } });
+  const piece = (name, group, box, extra = {}) => { const sh = boxShape(box); return { kind: 'mesh', name, group, box, known: true, shape: () => sh, ...extra }; };
+
+  test('a stadium\'s footprint: where its pieces stand, how high, and its outline', () => {
+    const fp = new shapes.Footprint();
+    const stands = boxShape(at(9000, 0, 1500, 2500, 7000, 1500));
+    fp.add(stands.pos, stands.idx);
+    assert.ok(fp.has(9000, 0, 1000) && fp.has(6600, 6900, 0), 'in the stands');
+    assert.ok(!fp.has(0, 0, 0) && !fp.has(13000, 0, 1000), 'not beside them');
+    assert.ok(fp.has(9000, 0, 8900) && !fp.has(9000, 0, 9200) && !fp.has(9000, 0, -500), 'up to a roof\'s height over them, not under them');
+    const roof = boxShape(at(9000, 0, 4000, 2000, 6000, 100));
+    assert.ok(fp.share(roof.pos, roof.idx).share > 0.99);
+    const half = boxShape(at(12000, 0, 2000, 3000, 3000, 2000));
+    assert.ok(Math.abs(fp.share(half.pos, half.idx).share - 0.46) < 0.1, 'half of it in the stands');
+    // with the pitch, the outline takes in the ground between them, not what is above it all
+    const pitch = boxShape(at(0, 0, 10, 4096, 5120, 10));
+    fp.add(pitch.pos, pitch.idx);
+    assert.ok(fp.inside(5500, 0, 0) && fp.inside(5500, 6000, 2000) && !fp.inside(-6000, 0, 0) && !fp.inside(5500, 0, 12000));
+    // kept and read back
+    const again = shapes.Footprint.from(JSON.parse(JSON.stringify(fp)));
+    assert.strictEqual(again.size, fp.size);
+    assert.ok(again.has(9000, 0, 1000) && !again.has(0, 7000, 0));
+  });
+
+  test('the stadium by its real shape: what counts, piece by piece', () => {
+    const pitch = piece('Grass_Base', 'EuroStadium_Assets.Meshes', at(0, 0, 10, 3806, 5760, 10));
+    const stands = piece('Stadium_Stands_East', 'X.Meshes', at(9000, 0, 1500, 2500, 7000, 1500));
+    const fp = mapbuild.footprintOf([pitch, stands]);
+    const yes = (it, why) => assert.ok(mapbuild.inStadium(it, fp), why), no = (it, why) => assert.ok(!mapbuild.inStadium(it, fp), why);
+    yes(pitch, 'the pitch');
+    yes(stands, 'the stands, by name');
+    yes(piece('Roof_Boxy', 'EuroStadium_Assets.Meshes', at(9000, 0, 4000, 2400, 6800, 200)), 'a roof over the stands, whatever its name (Mannfield\'s)');
+    yes(piece('Crowd_01', 'X.Meshes', at(9000, 3000, 2000, 2000, 2000, 500)), 'a crowd in the stands');
+    yes(piece('UTO_Field_BushTrim_01', 'UtopiaStadium_Assets_B.Meshes', at(0, 2624, 7, 3583, 2495, 8)), 'a pattern lying flat on the pitch is its surface');
+    yes(piece('UF_Ribbon', 'UF_Assets_01.Meshes.Stadium', at(0, 0, 6952, 10688, 13924, 373)), 'kept in a folder named Stadium');
+    no(piece('SM_Mall_Crowds', 'Mall_OOB_Assets_01.Meshes', at(484, 751, 500, 15332, 15917, 300)), 'a crowd all over a mall is no stands of its own');
+    no(piece('UTO_TopiaryStadium_SM', 'UtopiaStadium_Assets.Meshes', at(9000, 0, 400, 1000, 1000, 300)), 'a topiary, even named stadium, even in the stands');
+    no(piece('DFH_10A_Plantpotter', 'FutureStadium_10A_Assets_02.Meshes', at(9000, 1000, 400, 100, 100, 100)), 'a plant pot');
+    no(piece('Utopia_FieldRailingBushes_SM', 'UtopiaStadium_Assets_B.Meshes', at(4300, 0, 300, 100, 3000, 200)), 'bushes on the field railing');
+    no(piece('Pots4', 'UtopiaCombined_Assets.SM', at(3, -6274, 570, 1987, 123, 316)), 'flower pots by the pitch');
+    no(piece('OOB_BuildingBrick', 'City.Meshes', at(16358, 0, 4032, 1797, 9000, 4032)), 'a building behind the stands');
+    no(piece('Wall_Next_Door', 'X.Meshes', at(12000, 0, 2000, 3000, 3000, 2000)), 'half in the stands is not part of them');
+    no(piece('PA_Stadium_Ground_01', 'Paname.Meshes', at(0, 0, 0, 12000, 15000, 50)), 'ground, even named stadium: the other arena keeps its own');
+    no(piece('ConcreteBase', 'Park_Assets.Meshes', at(0, 0, -48, 5120, 6656, 16)), 'the ground under the pitch');
+    no(piece('TerrainClose', 'Park_Assets.Meshes', at(-2730, 4844, 21, 16723, 18909, 352)), 'gently rolling ground');
+    no(piece('CylinderSheet', 'UtopiaSnow_Assets.Meshes', at(16, 0, 3568, 8192, 8192, 2560)), 'a weather sheet');
+    no(piece('StadiumFogRing', 'EuroStadium_Assets.Meshes', at(0, 0, 500, 5000, 5000, 100)), 'fog');
+    no(piece('BoostPad_Small', 'Pickup_Boost', at(1792, -4180, 9, 48, 44, 3)), 'boost pads come with the gameplay, from the other arena');
+    no(piece('Cube', 'EngineMeshes', at(0, 0, 790, 50, 50, 50)), 'the helper shapes of the game');
+    no(piece('Stadium_Lights', 'X.Meshes', at(9000, 0, 30000, 2000, 2000, 500)), 'too high up');
+    no({ kind: 'mesh', name: 'Goal_Frame', group: 'X', box: null, known: false, shape: () => null }, 'no position');
+    no({ kind: 'actor', cls: 'InterpActor', name: 'InterpActor_4', box: at(0, 0, 3000, 0, 0, 0), known: true, shape: () => null }, 'a moving thing that is no mesh');
+    // light cones reach from the stands down over the pitch: part of the stadium, but no ground of it
+    const cone = piece('Stadium_LightCones', 'SS_OOB.Meshes', at(4500, 0, 2500, 4500, 3000, 2500));
+    assert.ok(mapbuild.sure(cone) && mapbuild.footprintOf([cone]).size === 0);
+    // the other arena: a corner of a hill in the new stands clears it, its seafloor under the pitch stays
+    assert.ok(mapbuild.clashes(piece('Hill', 'X.Meshes', at(16000, 0, 1000, 8000, 3000, 1000)), fp), 'a hill poking into the stands goes');
+    assert.ok(!mapbuild.clashes(piece('Hill', 'X.Meshes', at(30000, 0, 1000, 8000, 3000, 1000)), fp), 'one further out stays');
+    assert.ok(mapbuild.enclosed(piece('Fence', 'X.Meshes', at(5500, 3000, 100, 50, 1500, 100)), fp), 'a fence between the pitch and the stands goes');
+    assert.ok(!mapbuild.enclosed(piece('Plaza', 'X.Meshes', at(0, 0, -100, 9000, 9000, 120)), fp), 'the lie of the land is no fence');
+    assert.ok(mapbuild.rules.underlay(piece('UND_SeaFloor_01', 'UND.Meshes', at(0, 0, -14000, 41000, 47000, 14000))), 'land the whole arena stands on');
   });
 
   test('strictly the stadium, on real arenas: no scenery and nothing unplaced comes along, the pitch does', () => {
@@ -815,8 +871,10 @@ function makeEngine(cooked, running = { value: false }) {
       const log = [];
       mapbuild.keepSide(P, 'stadium', { gameplay: false, lights: false, part: /_Field/.test(file) }, log);
       const kept = log.filter((l) => l.kept && l.what !== 'GroundStaticMeshActor_TA');
-      const scenery = kept.filter((l) => SCENERY.test(`${l.name} ${l.group}`) && !/stadium/i.test(l.name));
-      assert.ok(!kept.some((l) => wordsOf(l.name).some((w) => /^(topiary|bush(es)?|pots?|planters?|vines?|candy)$/.test(w))), `${file}: plants or garden decoration came along`);
+      // (a pattern lying flat on the pitch is its surface: Utopia's is called BushTrim)
+      const flat = (l) => l.z + l.d < 60 && Math.abs(l.x) <= 5600 && Math.abs(l.y) <= 7000;
+      const scenery = kept.filter((l) => SCENERY.test(`${l.name} ${l.group}`) && !/stadium/i.test(l.name) && !flat(l));
+      assert.ok(!kept.some((l) => !flat(l) && wordsOf(l.name).some((w) => /^(topiary|bush(es)?|pots?|planters?|vines?|candy)$/.test(w))), `${file}: plants or garden decoration came along`);
       assert.deepStrictEqual(scenery.map((l) => `${l.group}.${l.name}`), [], `${file}: scenery came along`);
       assert.ok(kept.every((l) => l.x !== null), `${file}: a piece with no position came along`);
       const onPitch = kept.filter((l) => Math.abs(l.x) <= 4096 && Math.abs(l.y) <= 5120);
@@ -825,6 +883,50 @@ function makeEngine(cooked, running = { value: false }) {
       checked++;
     }
     assert.ok(checked >= 3, `${checked} arenas checked`);
+  }, !real);
+
+  test('a merge of real arenas: nothing of the other arena stands in or around the new stadium, its land stays', () => {
+    const keysFile = path.join(process.env.APPDATA || '', 'OpenW', 'keys.txt');
+    if (!fs.existsSync(keysFile)) return;
+    const keys = upk.parseKeys(fs.readFileSync(keysFile, 'utf8'));
+    const backups = path.join(process.env.APPDATA || '', 'OpenW', 'backups');
+    const original = (f) => (fs.existsSync(path.join(backups, f.toLowerCase())) ? path.join(backups, f.toLowerCase()) : path.join(real, f));
+    const open = (f) => { try { return mapbuild.open(fs.readFileSync(original(f)), keys); } catch { return null; } };
+    const footprint = (files) => { const fp = mapbuild.footprint([]); for (const f of files) { const P = open(f); if (P) mapbuild.footprint([P], fp); } return fp; };
+    // [stadium arena's files, place arena's files, pieces of the place that must go, pieces that must stay]
+    const pairs = [
+      [['UtopiaStadium_Snow_P.upk'], ['Farm_GRS_P.upk'], ['Bleachers_002', 'Farm_EggPeople_Blue_SM', 'Platform_IVTK', 'Farm_G_FieldGrass', 'Cows_01'], ['Hill_01']],
+      [['EuroStadium_P.upk'], ['Park_P.upk'], ['LombardyTrees_Combined_02', 'Grass_Base'], ['TerrainClose']],
+      [['CS_P.upk', 'CS_Field.upk', 'CS_OOB2.upk'], ['Underwater_P.upk', 'Underwater_Field.upk', 'Underwater_FX.upk', 'Underwater_OOB_foliage.upk'], ['UND_Field', 'UND_GlassWall001'], ['UND_SeaFloor_01']],
+      [['UtopiaStadium_P.upk'], ['CS_P.upk', 'CS_Field.upk', 'CS_Grounds.upk', 'CS_OOB.upk', 'CS_OOB2.upk'], ['Park_BannerScaffold00', 'CS_Stands_00'], ['CS_Grounds_Floor01']],
+    ];
+    let checked = 0;
+    for (const [sFiles, pFiles, gone, stay] of pairs) {
+      if (![...sFiles, ...pFiles].every((f) => fs.existsSync(path.join(real, f)))) continue;
+      const sFp = footprint(sFiles), pFp = footprint(pFiles);
+      const kept = new Set(), hidden = new Set();
+      for (const file of pFiles) {
+        const A = open(file), B = open(file);
+        if (!A) continue;
+        const items = mapbuild.inventory(A), log = [];
+        mapbuild.keepSide(B, 'surroundings', { own: pFp, clear: sFp, gameplay: file === pFiles[0], part: file !== pFiles[0], lights: true }, log);
+        items.forEach((it, i) => {
+          const name = it.mesh || it.name;
+          (log[i].kept ? kept : hidden).add(name);
+          if (!log[i].kept || !it.box || (it.kind === 'actor' && !it.mesh)) return;
+          if (mapbuild.rules.isGround(it) || mapbuild.rules.underlay(it) || mapbuild.rules.atmosphere(it)) return;
+          if (/^(EngineMeshes|EditorMeshes|CollisionMeshes)/.test(it.group || '') || /pickup|collision/i.test(`${it.group} ${name}`)) return;
+          // nothing poking into the new stands, nothing inside either stadium's outline
+          assert.ok(!mapbuild.clashes(it, sFp), `${file}: ${name} stands in the new stadium`);
+          assert.ok(!mapbuild.enclosed(it, sFp) && !mapbuild.enclosed(it, pFp), `${file}: ${name} stands inside a stadium`);
+          assert.ok(!mapbuild.inStadium(it, pFp), `${file}: ${name} of its own stadium stayed`);
+        });
+      }
+      for (const n of gone) assert.ok(hidden.has(n) && !kept.has(n), `${pFiles[0]}: ${n} should go`);
+      for (const n of stay) assert.ok(kept.has(n), `${pFiles[0]}: ${n} should stay`);
+      checked++;
+    }
+    assert.ok(checked >= 2, `${checked} pairs checked`);
   }, !real);
 
   test('a map is taken apart and put back together without changing anything else', () => {
@@ -842,7 +944,7 @@ function makeEngine(cooked, running = { value: false }) {
     // one side kept: some meshes hidden, gameplay gone from the surroundings, a part renamed, still readable
     const S = mapbuild.open(buf, keys);
     const log = [];
-    const stats = mapbuild.keepSide(S, 'surroundings', { region: mapbuild.arenaRegion([mapbuild.open(buf, keys)]) }, log);
+    const stats = mapbuild.keepSide(S, 'surroundings', {}, log);
     assert.ok(stats.hidden > 20 && stats.kept > 20, JSON.stringify(stats));
     // no gameplay and no lights come along with the outside; sky and fog do
     assert.ok(log.filter((l) => /^(VehiclePickup|Goal|PlayerStart|StaticLightCollectionActor)/.test(l.what)).every((l) => !l.kept));

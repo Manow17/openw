@@ -15,6 +15,7 @@
 const zlib = require('zlib');
 const crypto = require('crypto');
 const upk = require('./upk');
+const shapes = require('./shapes');
 
 const TAG = 0x9e2a83c1;
 const BLOCK = 131072;
@@ -209,6 +210,16 @@ function placement(d, r) {
   const s = sp && sp.type === 'FloatProperty' ? d.readFloatLE(sp.at) : 1;
   return { t, yaw, s: { x: s3.x * s, y: s3.y * s, z: s3.z * s } };
 }
+// The full placement of a component or an actor: where (t), turned how (pitch, yaw, roll in
+// turns of 65536) and scaled how. A property that is not written has its default.
+function transform(d, r, tName, s3Name, sName) {
+  const t = vec(d, prop(r, tName)) || { x: 0, y: 0, z: 0 };
+  const rot = prop(r, 'Rotation');
+  const R = rot && rot.size === 12 ? { p: d.readInt32LE(rot.at), y: d.readInt32LE(rot.at + 4), r: d.readInt32LE(rot.at + 8) } : { p: 0, y: 0, r: 0 };
+  const s3 = vec(d, prop(r, s3Name)) || { x: 1, y: 1, z: 1 };
+  const sp = prop(r, sName), s = sp && sp.type === 'FloatProperty' ? d.readFloatLE(sp.at) : 1;
+  return { t, rot: R, s: { x: s3.x * s, y: s3.y * s, z: s3.z * s } };
+}
 // World box of local bounds under a placement.
 function worldBox(b, pl) {
   const cx = b.c.x * pl.s.x, cy = b.c.y * pl.s.y;
@@ -224,6 +235,8 @@ function worldBox(b, pl) {
 // hideable on its own), and the other actors (removable from the level).
 function inventory(P) {
   const cache = new Map();
+  // its real shape in the world, read when asked for
+  function shape() { return worldShape(P, this); }
   const { d: lv, at, count } = levelActors(P);
   const items = [];
   // where a mesh or particle system comes from: "Trees.Meshes" for LombardyPoplar_Mini
@@ -254,6 +267,8 @@ function inventory(P) {
         const local = sm ? meshBounds(P, obj, cache) : null;
         items.push({
           kind: sm ? 'mesh' : 'particles', name, group, box: local ? worldBox(local, pl) : { c: pl.t, e: { x: 0, y: 0, z: 0 } }, known: !!local || !!prop(cr, 'Translation'),
+          ref: sm ? obj : 0, xf: sm ? transform(cd, cr, 'Translation', 'Scale3D', 'Scale') : null,
+          shape,
           hide: () => cd.writeInt32LE(0, slot.at),
           move: (dz) => shiftZ(P, cd, dz),
         });
@@ -262,6 +277,7 @@ function inventory(P) {
     }
     const loc = vec(d, prop(r, 'Location'));
     const item = { kind: 'actor', cls: actor.cls, name: actor.name, box: loc ? { c: loc, e: { x: 0, y: 0, z: 0 } } : null, known: !!loc, hide: remove };
+    item.shape = shape;
     // a mesh placed on its own (StaticMeshActor, InterpActor, ...): which mesh, and where, so it is
     // judged by what it is
     const comp = prop(r, 'StaticMeshComponent');
@@ -270,7 +286,7 @@ function inventory(P) {
       const sm = prop(tagged(P, cd), 'StaticMesh');
       const obj = sm && sm.type === 'ObjectProperty' ? cd.readInt32LE(sm.at) : 0;
       if (obj) {
-        Object.assign(item, { mesh: named(obj).name, group: named(obj).group });
+        Object.assign(item, { mesh: named(obj).name, group: named(obj).group, ref: obj, xf: transform(d, r, 'Location', 'DrawScale3D', 'DrawScale') });
         const local = meshBounds(P, obj, cache);
         if (local) {
           // a property that is not written has its default: an actor with no Location is at the centre
@@ -288,14 +304,29 @@ function inventory(P) {
   return items;
 }
 
-/* ---------- what is stadium (strict, since 0.4.13) ----------
- * A piece is stadium when it lies on the pitch with its walls and goals (the same in every
- * standard arena), or when its name or its package names a stadium part (stands, crowd, seats,
- * roof, field lights, banners, ...) and it is within reach of the pitch. Anything named as
- * scenery (trees, rocks, dunes, mountains, sky, buildings, city, water, weather, ...) never is,
- * and neither is anything whose place is not known. Before 0.4.13 the stadium was a measured
- * region (the boxes of every mesh named like stands); one big stands mesh made it swallow the
- * whole area around the stadium, and trees, dunes and rocks came along into the other arena. */
+// The real shape of a placed mesh, in world space: { pos, idx }, or null when it cannot be read.
+function worldShape(P, it) {
+  if (!it.ref || it.ref <= 0 || !it.xf) return null;
+  if (!P.shapes) P.shapes = new Map();
+  let s = P.shapes.get(it.ref);
+  if (s === undefined) {
+    const d = P.obj(P.t.exports[it.ref - 1]);
+    const r = tagged(P, d);
+    s = r ? shapes.meshShape(d, r.end) : null;
+    P.shapes.set(it.ref, s);
+  }
+  if (!s) return null;
+  if (!it.world) it.world = { pos: shapes.place(s, it.xf), idx: s.idx };
+  return it.world;
+}
+
+/* ---------- what is stadium ----------
+ * Each piece of a map is judged by what it is (its name, its package) and by where its real
+ * shape stands. Plants, ground, sky and weather, the game's helper shapes and scenery by name
+ * never are stadium. Before 0.4.13 the stadium was a measured area (boxes around anything named
+ * like stands) that swallowed trees, rocks and buildings; 0.4.13 and 0.4.14 went by names, which
+ * missed roofs and let topiaries named "TopiaryStadium" in; since 0.4.15 it is the footprint of
+ * the real shapes (below). */
 const words = (text) => String(text || '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z]+/).filter(Boolean);
 // atmosphere: never part of a stadium, wherever it is (fog over the pitch is the arena's weather)
 const ATMOSPHERE_WORDS = new Set(('fog fogs mist haze cloud clouds sky skydome skybox skysphere skyline planet planets moon sun stars galaxy nebula aurora borealis '
@@ -304,7 +335,14 @@ const ATMOSPHERE_WORDS = new Set(('fog fogs mist haze cloud clouds sky skydome s
 // planters and vines stood on the other arena's grass); grass only as the pitch surface itself
 const TREE_WORDS = new Set(('tree trees poplar poplars leafy pine pines palm palms cypress bush bushes shrub shrubs plant plants planter planters topiary '
   + 'hedge hedges ivy vine vines flower flowers foliage pot pots corn cactus candy cane canes wreath garland').split(' '));
-const plantlike = (it) => nameWords(it).some((w) => TREE_WORDS.has(w)) || (nameWords(it).includes('grass') && it.box && it.box.c.z + it.box.e.z > 60);
+// (a pattern lying flat on the pitch is its surface, whatever it is called: Utopia's is "BushTrim")
+const flatOnPitch = (it) => !!it.box && it.box.c.z + it.box.e.z < 60 && Math.abs(it.box.c.x) <= FIELD.x && Math.abs(it.box.c.y) <= FIELD.y;
+// (a word starting like a plant counts too: "Plantpotter", "PeachBlossom", "Lillypads"; short
+// words only whole, since "corner" is no corn)
+const PLANT_STEMS = ['plant', 'flower', 'bush', 'shrub', 'hedge', 'topiar', 'blossom', 'petal', 'foliage', 'lilypad', 'lillypad', 'lilies', 'tree',
+  'palm', 'poplar', 'cypress', 'vine', 'cactus', 'cacti', 'fern', 'seaweed', 'kelp', 'coral', 'leaf', 'leaves', 'wreath', 'garland', 'candycane', 'mushroom'];
+const plantWord = (w) => TREE_WORDS.has(w) || ['lily', 'reed', 'reeds', 'moss'].includes(w) || (w.length > 3 && PLANT_STEMS.some((s) => w.startsWith(s)));
+const plantlike = (it) => !flatOnPitch(it) && (nameWords(it).some(plantWord) || (nameWords(it).includes('grass') && it.box && it.box.c.z + it.box.e.z > 60));
 // scenery: vetoes a stadium-named piece away from the pitch (by its own name)
 const SCENERY_WORDS = new Set([...TREE_WORDS, ...('bush bushes shrub shrubs plant plants foliage flower flowers hedge hedges ivy vine vines rock rocks boulder boulders '
   + 'cliff cliffs dune dunes mountain mountains hill hills terrain landscape mesa water ocean sea waves river lake pond waterfall building buildings skyscraper '
@@ -331,82 +369,112 @@ const placed = (it) => !!it.box && it.known && (it.kind !== 'mesh' || it.box.e.x
 const onField = (it) => placed(it) && Math.abs(it.box.c.x) + it.box.e.x * 0.5 <= FIELD.x && Math.abs(it.box.c.y) + it.box.e.y * 0.5 <= FIELD.y && it.box.c.z < 6000;
 // ground: low, thin and reaching past the pitch. Every standard arena's ground fits under any
 // stadium, so an arena keeps its own and never gets the other's.
-const isGround = (it) => { const g = it.box; return placed(it) && g.e.z < 300 && g.c.z - g.e.z < 100 && g.c.z + g.e.z < 600 && (g.e.x > PITCH.x || g.e.y > PITCH.y); };
+// (gently rolling ground counts too: Beckwith Park's "TerrainClose" rises 350 over 37000; a slab
+// under the stands, like Futura Garden's "UF_Stands_Backing", is part of the stands)
+const isGround = (it) => {
+  const g = it.box;
+  if (!placed(it) || g.c.z - g.e.z >= 100 || !(g.e.x > PITCH.x || g.e.y > PITCH.y)) return false;
+  if (standsNamed(it) && !nameWords(it).some((w) => ['ground', 'floor', 'terrain', 'landscape'].includes(w))) return false;
+  return (g.e.z < 300 && g.c.z + g.e.z < 600) || (Math.max(g.e.x, g.e.y) > 12000 && g.c.z + g.e.z < 1500 && g.e.z < 0.05 * Math.max(g.e.x, g.e.y));
+};
+// The land the whole arena stands on, whatever its shape: a big piece whose surface runs under
+// the pitch (AquaDome's seafloor is one bowl rising 55000 around the dome). It stays, like ground.
+function underlay(it) {
+  const g = it.box;
+  if (!placed(it) || Math.max(g.e.x, g.e.y) < 8000 || Math.abs(g.c.x) > g.e.x || Math.abs(g.c.y) > g.e.y || g.c.z - g.e.z > 0) return false;
+  const s = it.shape();
+  if (!s) return false;
+  let under = 0;
+  shapes.samples(s.pos, s.idx, 500, (x, y, z, a) => { if (Math.abs(x) <= 4096 && Math.abs(y) <= 5120 && z < 200) under += a; });
+  return under > 0.25 * 8192 * 10240;
+}
+// the lie of the land: broad, low for its size and starting at the ground (a seafloor, a plaza,
+// hillsides). It may run under a stadium; only where it pokes into its stands does it go.
+const terrainLike = (it) => { const g = it.box; return placed(it) && Math.max(g.e.x, g.e.y) > 4000 && g.e.z < 0.3 * Math.max(g.e.x, g.e.y) && g.c.z - g.e.z < 300; };
 // the game's own helper shapes (a cube, a sphere) and the boost pads' meshes: gameplay, from the place arena
-const helper = (it) => /^EngineMeshes/i.test(it.group || '') || words(it.group).includes('pickup');
-function isStadium(it) {
-  if (!placed(it) || atmosphere(it) || plantlike(it) || helper(it) || /Foliage/.test(it.cls || '')) return false;
-  if (isGround(it)) return false; // the other arena keeps its own ground, whatever this one calls it
-  // other actors (moving meshes, sounds, ...) only when they are a mesh, or a flare on the pitch
-  if (it.kind === 'actor' && !it.mesh && !(/LensFlare|Emitter/.test(it.cls) && onField(it))) return false;
-  // on the pitch, with its walls and goals: the stadium, whatever its name
+const helper = (it) => /^(EngineMeshes|EditorMeshes)/i.test(it.group || '') || words(it.group).includes('pickup');
+/* ---------- the stadium by its real shape (since 0.4.15) ----------
+ * Names alone miss pieces and let others in: Mannfield's roof is "Roof_Boxy", Utopia's awnings
+ * over its stands have no stadium word, and its topiaries are "TopiaryStadium". So the stadium
+ * starts from its sure pieces: everything on the pitch with its walls and goals, and the pieces
+ * named as stands (stands, seats, bleachers, crowd, the stadium itself). Where their real
+ * shapes stand, seen from above with their heights, is the stadium's footprint. Any other piece
+ * is stadium when most of its real surface lies in that footprint (a roof or an awning over the
+ * stands, lights, flags and screens on them), and never when it is a plant, ground, sky or
+ * weather, a helper shape, or scenery by its name. */
+// (a crowd is no anchor of its own: Boostfield Mall's shoppers stand all over the mall, so a crowd
+// is stadium only where the stands are, like any other piece)
+const STANDS_WORDS = new Set('stadium stands seat seats seating bleacher bleachers tribune tribunes grandstand grandstands coliseum'.split(' '));
+// (or kept in a folder of its package named so: Futura Garden's ribbon over its stands is
+// UF_Assets_01.Meshes.Stadium.UF_Ribbon)
+const standsNamed = (it) => nameWords(it).some((w) => STANDS_WORDS.has(w) || (w.endsWith('stadium') && w.length > 7))
+  || /\.(stadium|stands)$/i.test(it.group || '');
+const IN_STADIUM = 0.6; // this much of a piece's surface in the footprint makes it part of the stadium
+// never part of any stadium, wherever it stands
+function never(it) {
+  if (!placed(it) || atmosphere(it) || plantlike(it) || helper(it) || /Foliage/.test(it.cls || '') || isGround(it)) return true;
+  return it.kind === 'actor' && !it.mesh && !(/LensFlare|Emitter/.test(it.cls) && onField(it));
+}
+// surely stadium: on the pitch, or named as stands within reach of it
+function sure(it) {
+  if (never(it)) return false;
   if (onField(it)) return true;
-  // further out: only pieces named as stadium parts, never scenery, within reach of the pitch
   const { c } = it.box;
-  return stadiumNamed(it) && !scenery(it) && Math.abs(c.x) <= REACH && Math.abs(c.y) <= REACH && c.z <= TOP;
+  return standsNamed(it) && !scenery(it) && Math.abs(c.x) <= REACH && Math.abs(c.y) <= REACH && c.z <= TOP;
+}
+// An arena's stadium footprint, from all its files that hold some of it (added to fp when given,
+// so the files can be read one at a time)
+function footprint(packages, fp = new shapes.Footprint()) {
+  for (const P of packages) footprintOf(inventory(P), fp);
+  return fp;
+}
+// The footprint of the sure pieces among these (inventory items)
+function footprintOf(items, fp = new shapes.Footprint()) {
+  for (const it of items) {
+    // (light cones and beams reach from the stands down over the pitch: no ground of the stadium)
+    if (!sure(it) || nameWords(it).some((w) => /^(light)?(cone|cones|beam|beams)$/.test(w))) continue;
+    const s = it.shape();
+    if (s) fp.add(s.pos, s.idx);
+    else if (it.kind !== 'actor' || it.mesh) fp.addBox(it.box);
+  }
+  return fp;
+}
+// Is this piece part of the stadium whose footprint is fp?
+function inStadium(it, fp) {
+  if (never(it)) return false;
+  if (sure(it)) return true;
+  if (!fp || scenery(it)) return false;
+  const s = it.shape();
+  if (s) return fp.share(s.pos, s.idx).share >= IN_STADIUM;
+  const { c, e } = it.box;
+  return [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].every(([dx, dy]) => fp.has(c.x + dx * e.x * 0.5, c.y + dy * e.y * 0.5, c.z));
+}
+// Does a piece of the other arena stand where the stadium brought in stands? (a little of it is
+// enough: it would poke through the stands)
+function clashes(it, fp) {
+  if (!fp || !placed(it) || atmosphere(it)) return false;
+  const s = it.shape();
+  if (s) { const r = fp.share(s.pos, s.idx); return r.share > 0.15 || r.area > 400000; }
+  return fp.has(it.box.c.x, it.box.c.y, it.box.c.z);
+}
+// Is a piece (mostly) inside a stadium's outline, seen from above, and not above all of it?
+function enclosed(it, fp) {
+  if (!fp || !placed(it) || atmosphere(it) || terrainLike(it)) return false;
+  const s = it.shape();
+  if (s) return fp.within(s.pos, s.idx) >= 0.5;
+  return fp.inside(it.box.c.x, it.box.c.y, it.box.c.z);
+}
+// boxes ({ x0, x1, y0, y1 }, as merges before 0.4.15 kept them) as a footprint
+function boxFootprint(boxes) {
+  const fp = new shapes.Footprint();
+  for (const b of boxes || []) fp.addBox({ c: { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2, z: 9000 }, e: { x: (b.x1 - b.x0) / 2, y: (b.y1 - b.y0) / 2, z: 10000 } });
+  return fp;
 }
 
-/* ---------- what is stadium and what is outside ---------- */
+/* ---------- keeping one side ---------- */
 
-// The stadium of an arena is a region: the pitch with its walls and goals, plus the footprint
-// of each of its stands (measured from the map). Arenas differ a lot: Parc de Paris has stands
-// only behind the goals and open park along the sides, so one box around everything would
-// count the park as stadium.
-const STANDS = /stand|bleach|seat|tribune|grandstand|crowd|people|audience|spectator|_roof|backwall/i;
-const SKY = /sky|cloud|sunplane|sun_?disc|moon|horizon|fog|backdrop|skyline|stars?_|aurora|borealis/i;
-const GROUND_DROP = 25; // how far the place arena's ground under the pitch is lowered
-const SKY_HEIGHT = 4500; // a placed actor above this (the crossbar is at 642, the ceiling at 2044) is sky
-const NEVER_STADIUM = /OOB/i;
-const STADIUM_PART = /stadium|arena|coliseum/i;
 const PITCH = { x: 4700, y: 6400 }; // half sizes: walls at 4096 x 5120, goals 880 deep, a little room
-const STAND_ROOM = 400;
-
-// One box per stands piece, mirrored both ways (arenas are symmetric).
-function standBoxes(P) {
-  const out = [];
-  for (const it of inventory(P)) {
-    if (it.kind !== 'mesh' || !it.known || !STANDS.test(it.name) || SKY.test(it.name) || NEVER_STADIUM.test(it.name)) continue;
-    if (flat(it.box)) continue; // a path or floor named after the stands is not a stand
-    const { c, e } = it.box;
-    if (Math.abs(c.x) + e.x > 60000 || Math.abs(c.y) + e.y > 60000) continue; // a mistaken giant: not a stand
-    for (const [sx, sy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
-      out.push({
-        x0: sx * c.x - e.x - STAND_ROOM, x1: sx * c.x + e.x + STAND_ROOM, y0: sy * c.y - e.y - STAND_ROOM, y1: sy * c.y + e.y + STAND_ROOM,
-        z0: c.z - e.z, z1: c.z + e.z + STAND_ROOM, stands: true, // nothing below the stands (water, ground) is part of them
-      });
-    }
-  }
-  return out;
-}
-// The stadium region of an arena from all its packages that hold stands (main file, stadium
-// file, outside parts): [pitch box, ...stand boxes], rounded and without duplicates.
-function arenaRegion(packages) {
-  const boxes = [{ x0: -PITCH.x, x1: PITCH.x, y0: -PITCH.y, y1: PITCH.y }];
-  const seen = new Set();
-  for (const P of packages) {
-    for (const b of standBoxes(P)) {
-      const r = { x0: Math.round(b.x0), x1: Math.round(b.x1), y0: Math.round(b.y0), y1: Math.round(b.y1), z0: Math.round(b.z0), z1: Math.round(b.z1), stands: true };
-      const k = `${r.x0},${r.x1},${r.y0},${r.y1},${r.z0},${r.z1}`;
-      if (!seen.has(k)) { seen.add(k); boxes.push(r); }
-    }
-  }
-  return boxes;
-}
-const inRegion = (pt, region) => region.some((b) => pt.x >= b.x0 && pt.x <= b.x1 && pt.y >= b.y0 && pt.y <= b.y1);
-const regionBounds = (region) => region.reduce((a, b) => ({ x: Math.max(a.x, Math.abs(b.x0), Math.abs(b.x1)), y: Math.max(a.y, Math.abs(b.y0), Math.abs(b.y1)) }), { x: 0, y: 0 });
-// mostly inside: its centre, and the middle of each side, are in the region
-const mostlyIn = (box, region) => inRegion(box.c, region)
-  && [[1, 0], [-1, 0], [0, 1], [0, -1]].every(([dx, dy]) => inRegion({ x: box.c.x + dx * box.e.x * 0.5, y: box.c.y + dy * box.e.y * 0.5 }, region));
-const flat = (box) => box.e.z < 150 && (box.e.x > 2000 || box.e.y > 2000);
-// In 3D, inside the stands themselves (not just above or below them): a lily pad on the water
-// next to the stands, or a big rock that only touches them, is not part of the stands.
-const inStands = (pt, region) => region.some((b) => b.stands && pt.x >= b.x0 && pt.x <= b.x1 && pt.y >= b.y0 && pt.y <= b.y1 && pt.z >= b.z0 && pt.z <= b.z1);
-const mostlyInStands = (box, region) => inStands(box.c, region)
-  && [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].every(([dx, dy, dz]) => inStands({ x: box.c.x + dx * box.e.x * 0.5, y: box.c.y + dy * box.e.y * 0.5, z: box.c.z + dz * box.e.z * 0.5 }, region));
-const pitchOnly = (region) => region.filter((b) => !b.stands);
-// names of stadium pieces (an arena's own stadium, wherever its stands box ends)
-const STADIUM_WORDS = /stadium|stand|seat|bleach|tribune|grandstand|crowd|arena|coliseum|field|goal|pitch/i;
-const DEFAULT_REGION = [{ x0: -6500, x1: 6500, y0: -8000, y1: 8000 }];
+const GROUND_DROP = 25; // how far the place arena's ground under the pitch is lowered
 
 // Gameplay pieces: they come from one map only (the base), never from both.
 const GAMEPLAY = /^(VehiclePickup|Goal|PlayerStart|Pylon|PointInSpace|CameraActor|SpectatorVolume|TriggerVolume|DecalBlockingActor|FXActor|LightmassImportanceVolume|PrefabInstance|MapInfo|ArenaSoundSettings|CrowdSounds|StatEvent|SceneCapture|Note|.*Volume(_TA)?$|.*Manager_TA$)/;
@@ -417,20 +485,22 @@ const LIGHTS = /^(StaticLightCollectionActor|.*Light)$/;
 
 /**
  * Keeps one side of a map package, in place.
- *   'stadium'       only this arena's stadium (`region`): pieces mostly inside it. The sky,
- *                   fog, anything named OOB and everything further out is hidden. Lights stay
- *                   (they light the stadium).
- *   'surroundings'  only what lies outside both stadiums (`region`, this arena's own, and
- *                   `clear`, the other arena's), plus sky and fog. Lights are taken out.
+ *   'stadium'       only this arena's stadium: its pieces by `own`, the footprint of this
+ *                   arena's stadium (from all its files). Gameplay, lights, sky and fog go.
+ *   'surroundings'  everything but this arena's own stadium, anything on its pitch or close
+ *                   around it, and anything standing where the stadium brought in stands
+ *                   (`clear`, that stadium's footprint). Its ground, sky and fog stay.
+ * own and clear: shapes.Footprint (from footprint()); clear may also be boxes, as merges before
+ * 0.4.15 kept it. Without own, this package alone makes the footprint.
  * gameplay: keep the gameplay actors (boost pads, goals, spawns, collision). Exactly one
  * package of a merge has them.
  * Returns counts; `log` (an array) gets one line per thing.
  */
-function keepSide(P, side, { region = DEFAULT_REGION, clear = [], gameplay = side === 'stadium', part = false, lights = null } = {}, log = null) {
+function keepSide(P, side, { clear = null, own = null, gameplay = side === 'stadium', part = false, lights = null } = {}, log = null) {
   const keepLights = lights === null ? side === 'stadium' || gameplay : !!lights;
   const stats = { kept: 0, hidden: 0 };
-  // `clear`: the pieces of the stadium brought in (their boxes): nothing of this arena stays there
-  const clearReach = regionBounds(clear);
+  if (!own && side !== 'empty') own = footprint([P]);
+  if (Array.isArray(clear)) clear = clear.length ? boxFootprint(clear) : null;
   for (const it of inventory(P)) {
     let keep;
     const cls = it.kind === 'actor' ? it.cls : '';
@@ -444,7 +514,7 @@ function keepSide(P, side, { region = DEFAULT_REGION, clear = [], gameplay = sid
     // main map, or the place arena's grass draws over the new pitch
     else if (/^GroundStaticMeshActor/.test(cls)) keep = side === 'stadium' && !part;
     else if (/collision/i.test(`${it.name} ${it.mesh || ''} ${it.group || ''}`)) keep = gameplay; // from one map only
-    else if (side === 'stadium') keep = isStadium(it); // strictly the stadium: nothing else of this arena
+    else if (side === 'stadium') keep = inStadium(it, own); // strictly the stadium: nothing else of this arena
     else if (!placed(it)) {
       // a piece whose place is not known: in this arena's main map it is taken as stadium, unless it
       // is plainly scenery; in an outside part file (fish, birds, weather) it is outside
@@ -454,18 +524,19 @@ function keepSide(P, side, { region = DEFAULT_REGION, clear = [], gameplay = sid
       // this arena's ground stays: every standard arena's ground is shaped around the same pitch, so
       // it fits under any stadium (Deadeye Canyon's terrain runs right up to the walls). Ground is low
       // and thin and reaches past the pitch; the pitch itself (named so) goes.
-      const ground = isGround(it);
+      const ground = isGround(it) || underlay(it);
       // its own stadium, by the same rules as the one brought in, everything else on its pitch (its
       // planters and vines would float where its railing was), and whatever stands close around the
       // pitch, where a stadium's first stands are (Farmstead's egg crowd on its platform is not
       // called stands). Its sky and fog stay.
-      const near = Math.abs(g.c.x) <= NEAR.x && Math.abs(g.c.y) <= NEAR.y && g.c.z < 6000 && !atmosphere(it);
-      const own = isStadium(it) || (onField(it) && (!atmosphere(it) || stadiumNamed(it))) || near;
-      // where the new stadium's pieces stand, nothing of this arena may stand (a combined mesh far
-      // bigger than all of them, like a whole terrain in one, only goes when it is mostly inside)
-      const huge = !flat(g) && (g.e.x > clearReach.x * 1.2 || g.e.y > clearReach.y * 1.2);
-      const clash = clear.length > 0 && (huge ? mostlyIn(g, clear) : inRegion(g.c, clear) || mostlyIn(g, clear));
-      keep = ground || (!own && !clash);
+      // (a piece reaching far beyond, a hillside, is judged by what of it stands in the stadium)
+      const near = Math.abs(g.c.x) <= NEAR.x && Math.abs(g.c.y) <= NEAR.y && g.c.z < 6000 && !atmosphere(it)
+        && Math.abs(g.c.x) + g.e.x <= NEAR.x * 1.5 && Math.abs(g.c.y) + g.e.y <= NEAR.y * 1.5;
+      const mine = inStadium(it, own) || (onField(it) && (!atmosphere(it) || stadiumNamed(it))) || near;
+      // where the new stadium stands, nothing of this arena may stand, not even a corner of it; and
+      // nothing inside either stadium's outline (between the pitch and the stands: Champions
+      // Field's banner scaffolds on its plaza, a fence inside the new stadium) but the ground
+      keep = ground || (!mine && !clashes(it, clear) && !enclosed(it, own) && !enclosed(it, clear));
       // ground that runs under the pitch often has this arena's own pitch painted on it, at the same
       // height as the new one: lowered a little, the new pitch is always drawn on top
       if (keep && ground && Math.abs(g.c.x) - g.e.x < 4096 && Math.abs(g.c.y) - g.e.y < 5120 && g.c.z + g.e.z > -20) {
@@ -474,7 +545,7 @@ function keepSide(P, side, { region = DEFAULT_REGION, clear = [], gameplay = sid
     }
     if (!keep) it.hide();
     stats[keep ? 'kept' : 'hidden']++;
-    if (log) log.push({ what: it.kind === 'actor' ? it.cls : it.kind, name: it.mesh || it.name, group: it.group || '', x: it.box ? Math.round(it.box.c.x) : null, y: it.box ? Math.round(it.box.c.y) : null, w: it.box ? Math.round(it.box.e.x) : null, h: it.box ? Math.round(it.box.e.y) : null, kept: keep });
+    if (log) log.push({ what: it.kind === 'actor' ? it.cls : it.kind, name: it.mesh || it.name, group: it.group || '', x: it.box ? Math.round(it.box.c.x) : null, y: it.box ? Math.round(it.box.c.y) : null, w: it.box ? Math.round(it.box.e.x) : null, h: it.box ? Math.round(it.box.e.y) : null, z: it.box ? Math.round(it.box.c.z) : null, d: it.box ? Math.round(it.box.e.z) : null, kept: keep });
   }
   // weather that follows the camera (falling snow) can hang off any actor, WorldInfo included: a
   // stadium brought into another arena brings none of it
@@ -488,31 +559,12 @@ function keepSide(P, side, { region = DEFAULT_REGION, clear = [], gameplay = sid
   }
   return stats;
 }
-// How many stadium pieces a package has (a part with none is free to reuse).
-// How many stadium pieces a package has (by the strict rules; `region` is no longer used).
-function stadiumPieces(P) {
-  return inventory(P).filter((it) => it.kind !== 'actor' && isStadium(it)).length;
+// How many stadium pieces a package has (a part with none is free to reuse); fp: the arena's
+// stadium footprint (this package alone without it)
+function stadiumPieces(P, fp = null) {
+  const f = fp || footprint([P]);
+  return inventory(P).filter((it) => (it.kind !== 'actor' || it.mesh) && inStadium(it, f)).length;
 }
-// Where an arena's stadium pieces are: one box each (as a region: x0 x1 y0 y1), from all the files
-// that hold some. The place arena clears these, so nothing of it stands inside the new stadium.
-function stadiumBoxes(packages) {
-  const out = [], seen = new Set();
-  for (const P of packages) {
-    for (const it of inventory(P)) {
-      if (it.kind === 'actor' && !it.mesh) continue;
-      if (!isStadium(it) || it.box.e.x + it.box.e.y < 50) continue;
-      const { c, e } = it.box;
-      const b = { x0: Math.round(c.x - e.x), x1: Math.round(c.x + e.x), y0: Math.round(c.y - e.y), y1: Math.round(c.y + e.y) };
-      const k = `${b.x0},${b.x1},${b.y0},${b.y1}`;
-      if (!seen.has(k)) { seen.add(k); out.push(b); }
-    }
-  }
-  // the pitch is always part of it; a box inside another adds nothing
-  out.unshift({ x0: -PITCH.x, x1: PITCH.x, y0: -PITCH.y, y1: PITCH.y });
-  return out.filter((b, i) => !out.some((o, j) => j !== i && o.x0 <= b.x0 && o.x1 >= b.x1 && o.y0 <= b.y0 && o.y1 >= b.y1 && (j < i || o.x0 !== b.x0 || o.x1 !== b.x1 || o.y0 !== b.y0 || o.y1 !== b.y1)));
-}
-
-
 // Streaming level names a map loads (its part packages), as written in its name table.
 function partNames(P, partFiles) {
   const wanted = new Set(partFiles.map((f) => f.replace(/\.upk$/i, '').toLowerCase()));
@@ -525,4 +577,7 @@ function newFileName(seed, maxLen) {
   return `BP${hex.slice(0, Math.max(4, Math.min(8, maxLen - 2)))}`;
 }
 
-module.exports = { open, repack, zipChunks, keepSide, levelActors, partNames, newFileName, deflateChunk, tagged, inventory, arenaRegion, standBoxes, stadiumPieces, stadiumBoxes, isStadium, DEFAULT_REGION };
+module.exports = {
+  open, repack, zipChunks, keepSide, levelActors, partNames, newFileName, deflateChunk, tagged, inventory,
+  stadiumPieces, footprint, footprintOf, inStadium, sure, clashes, enclosed, rules: { isGround, underlay, atmosphere, terrainLike },
+};

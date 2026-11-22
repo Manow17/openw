@@ -123,15 +123,17 @@ function outsideParts(arena) {
  *     ("slots"), are pointed at new files holding the stadium arena's stadium pieces: its
  *     stadium file, its main map, and any part that holds some of its stadium, each with
  *     only the stadium kept (no gameplay, lights, sky or fog). A stadium file of place's that
- *     is not needed loads empty. Place's outside parts load as filtered copies (their own
- *     stadium pieces out); its effects and lights parts load as they are.
+ *     is not needed loads empty. Place's outside and effects parts load as filtered copies
+ *     (nothing of its own stadium, nothing inside or in the way of the new one); its lights
+ *     parts load as they are.
  *   - A place arena with no stadium file and no sound part has no slot. Then the stadium
  *     arena's map is the base instead (its gameplay and stadium) and place's map and outside
  *     parts load in its part files, place's main map first so its sky comes along; the
  *     lighting and fog are then the stadium arena's.
- * info (optional, from reading the maps): { stadiumRegion, placeRegion, stadiumHolders: Set of
- * stadium-arena files with stadium pieces, placeHolders: Set of place part files with stadium
- * pieces }. Without it, a best guess is planned for display.
+ * info (optional, from reading the maps, mergeInfo): { stadiumFiles, placeFiles: the files each
+ * arena's stadium footprint is read from, stadiumHolders: Set of stadium-arena files with stadium
+ * pieces, placeHolders: Set of place part files with stadium pieces }. Without it, a best guess
+ * is planned for display.
  * Standard soccar arenas only: the pitch shape comes with the stadium.
  * Returns { how: 'build', ops, play, note } or { how: 'none', reason }.
  */
@@ -142,16 +144,17 @@ function mergePlan(stadium, place, all = [], info = null) {
   if (odd.length) return { how: 'none', reason: `${odd.map((a) => a.name).join(' and ')} ${odd.length > 1 ? 'have' : 'has'} a pitch of another shape, so the walls and the ball would not line up.` };
   const label = `${stadium.name} stadium in ${place.name}`;
   const group = `merge:${stadium.id}:${place.id}`;
-  const sRegion = (info && info.stadiumRegion) || null, pRegion = (info && info.placeRegion) || null;
+  // the files each arena's stadium footprint is read from when the build is made (mapbuild.footprint)
+  const sFiles = (info && info.stadiumFiles) || arenaFiles(stadium), pFiles = (info && info.placeFiles) || arenaFiles(place);
   const holds = (set, file, guess) => (info ? set.has(file.toLowerCase()) : guess);
   const name = (p) => p.file.replace(/\.upk$/i, '');
   const newFile = (i, slot) => `${mapbuildName(`${stadium.id}>${place.id}:${i}`, name(slot).length)}.upk`;
-  // rev: how merges are built; one built before the strict stadium rules (0.4.13) is out of date
+  // rev: how merges are built; one built with older rules is out of date (MERGE_REV)
   const base = { kind: 'build', category: 'map', group, label, rev: MERGE_REV };
-  // the stadium arena's stadium pieces, from one of its files (strictly the stadium: mapbuild.js)
-  const stadiumOf = (from, extra = {}) => ({ ...base, from, side: 'stadium', region: null, clear: [], gameplay: false, lights: false, part: from !== stadium.file, ...extra });
-  // place's outside, from one of its files: its own stadium out, and nothing where the new stadium's pieces stand
-  const outsideOf = (from, extra = {}) => ({ ...base, from, side: 'surroundings', region: null, clear: sRegion || [], gameplay: false, lights: true, part: from !== place.file, ...extra });
+  // the stadium arena's stadium pieces, from one of its files (by its stadium's footprint: mapbuild.js)
+  const stadiumOf = (from, extra = {}) => ({ ...base, from, side: 'stadium', ownFiles: sFiles, gameplay: false, lights: false, part: from !== stadium.file, ...extra });
+  // place's outside, from one of its files: its own stadium out, and nothing where the new stadium stands
+  const outsideOf = (from, extra = {}) => ({ ...base, from, side: 'surroundings', ownFiles: pFiles, clearFiles: sFiles, gameplay: false, lights: true, part: from !== place.file, ...extra });
 
   // where the stadium arena's stadium is: its stadium file first (newer arenas keep the stands
   // there), its main map, and parts that hold some of it (Champions Field's upper ring is in CS_OOB2)
@@ -173,7 +176,9 @@ function mergePlan(stadium, place, all = [], info = null) {
       let op = null;
       if (source) op = stadiumOf(source);
       else if (p.kind === 'field') op = { ...stadiumOf(p.file), side: 'empty' }; // place's own stadium never loads
-      else if (p.kind === 'surroundings' && (holds(info && info.placeHolders, p.file, !!place.field) || sRegion)) op = outsideOf(p.file);
+      // nothing of its outside may stand in the new stadium, nor anything of its effects (Salty
+      // Shores' egg crowd and Starbase ARC's goal turrets are in its effects file)
+      else if (p.kind === 'surroundings' || p.kind === 'effects') op = outsideOf(p.file);
       if (!op) return; // effects, lights and unused sound parts load as they are
       const file = newFile(i, p);
       renames[name(p)] = file.replace(/\.upk$/i, '');
@@ -217,8 +222,10 @@ function mergePlan(stadium, place, all = [], info = null) {
 }
 // How merges are built: 2 since 0.4.13, when only strictly the stadium comes along; 3 since
 // 0.4.14, when no plants or garden decoration come along either and the other arena clears
-// everything close around its pitch (its own pitch floor and crowd too).
-const MERGE_REV = 3;
+// everything close around its pitch (its own pitch floor and crowd too); 4 since 0.4.15, when
+// the stadium is read from the real shapes of its pieces (its footprint) and the other arena
+// clears everything that stands where it stands.
+const MERGE_REV = 4;
 // A merge op built with older rules (more than the stadium could come along): to be built again.
 const oldMerge = (op) => !!op && op.kind === 'build' && (op.rev || 0) < MERGE_REV;
 
@@ -227,17 +234,19 @@ function mapbuildName(seed, maxLen) {
   const hex = require('crypto').createHash('sha1').update(seed).digest('hex');
   return `BP${hex.slice(0, Math.max(4, Math.min(8, maxLen - 2)))}`;
 }
+// The files an arena's stadium can be in: its main map, its stadium file, its outside and effects parts.
+const arenaFiles = (a) => [...new Set([a.file, a.field, ...a.parts.filter((p) => p.kind === 'surroundings' || p.kind === 'effects').map((p) => p.file)].filter(Boolean))];
 // What mergePlan needs to know, read from the maps. open(file) returns an opened package
-// (mapbuild.open) or null. stadiumRegion: the boxes of the stadium arena's stadium pieces (the
-// place arena clears them); the holders: which files have stadium pieces at all.
+// (mapbuild.open) or null. The files each stadium's footprint is read from, and which files
+// have stadium pieces at all (by that footprint).
 function mergeInfo(stadium, place, open, mapbuild) {
-  const holders = (a) => [a.file, a.field, ...a.parts.filter((p) => p.kind === 'surroundings').map((p) => p.file)].filter(Boolean);
-  const stadiumRegion = mapbuild.stadiumBoxes(holders(stadium).map(open).filter(Boolean));
-  const withStadium = (files) => new Set(files.filter((f) => { const pkg = open(f); return pkg && mapbuild.stadiumPieces(pkg) > 0; }).map((f) => f.toLowerCase()));
+  const footprint = (a) => { const fp = mapbuild.footprint([]); for (const f of arenaFiles(a)) { const pkg = open(f); if (pkg) mapbuild.footprint([pkg], fp); } return fp; };
+  const withStadium = (files, fp) => new Set(files.filter((f) => { const pkg = open(f); return pkg && mapbuild.stadiumPieces(pkg, fp) > 0; }).map((f) => f.toLowerCase()));
+  const sFp = footprint(stadium), pFp = footprint(place);
   return {
-    stadiumRegion, placeRegion: null,
-    stadiumHolders: withStadium([stadium.file, ...stadium.parts.filter((p) => p.kind === 'surroundings').map((p) => p.file)]),
-    placeHolders: withStadium(place.parts.filter((p) => p.kind === 'surroundings').map((p) => p.file)),
+    stadiumFiles: arenaFiles(stadium), placeFiles: arenaFiles(place),
+    stadiumHolders: withStadium([stadium.file, ...stadium.parts.filter((p) => p.kind === 'surroundings').map((p) => p.file)], sFp),
+    placeHolders: withStadium(place.parts.filter((p) => p.kind === 'surroundings').map((p) => p.file), pFp),
   };
 }
 
@@ -248,7 +257,7 @@ function mergeInfo(stadium, place, open, mapbuild) {
 
 // The game files an op reads: what it is built or copied from, and the file it writes over (it
 // is written with that file's own key, read from the file).
-const opReads = (op) => [op.from, op.sourceGameFile, op.create ? null : op.gameFile].filter(Boolean);
+const opReads = (op) => [op.from, op.sourceGameFile, op.create ? null : op.gameFile, ...(op.ownFiles || []), ...(op.clearFiles || [])].filter(Boolean);
 
 // Which of `files` (arena files and parts) cannot be opened: [{ file, arena }], one per file.
 function lockedFiles(arenas, files) {
@@ -382,4 +391,4 @@ function snowPlan(arena, arenas, changes = new Map()) {
   return { how: 'version', op, play: [arena], snowy: snowy.name, online: false };
 }
 
-module.exports = { scanArenas, arenaName, partKind, mergePlan, mergeInfo, outsideParts, arenasUsing, everyStadium, everyMatchTargets, everyMatchOps, sameEveryMatch, oldEveryMatch, oldMerge, MERGE_REV, effectiveArena, mergedArenas, snowPlan, opReads, lockedFiles, lockedFor, lockedMessage };
+module.exports = { scanArenas, arenaName, partKind, mergePlan, mergeInfo, arenaFiles, outsideParts, arenasUsing, everyStadium, everyMatchTargets, everyMatchOps, sameEveryMatch, oldEveryMatch, oldMerge, MERGE_REV, effectiveArena, mergedArenas, snowPlan, opReads, lockedFiles, lockedFor, lockedMessage };
