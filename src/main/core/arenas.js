@@ -146,11 +146,12 @@ function mergePlan(stadium, place, all = [], info = null) {
   const holds = (set, file, guess) => (info ? set.has(file.toLowerCase()) : guess);
   const name = (p) => p.file.replace(/\.upk$/i, '');
   const newFile = (i, slot) => `${mapbuildName(`${stadium.id}>${place.id}:${i}`, name(slot).length)}.upk`;
-  const base = { kind: 'build', category: 'map', group, label };
-  // the stadium arena's stadium pieces, from one of its files
-  const stadiumOf = (from, extra = {}) => ({ ...base, from, side: 'stadium', region: sRegion, clear: [], gameplay: false, lights: false, part: from !== stadium.file, ...extra });
-  // place's outside, from one of its files
-  const outsideOf = (from, extra = {}) => ({ ...base, from, side: 'surroundings', region: pRegion, clear: sRegion || [], gameplay: false, lights: true, part: from !== place.file, ...extra });
+  // rev: how merges are built; one built before the strict stadium rules (0.4.13) is out of date
+  const base = { kind: 'build', category: 'map', group, label, rev: MERGE_REV };
+  // the stadium arena's stadium pieces, from one of its files (strictly the stadium: mapbuild.js)
+  const stadiumOf = (from, extra = {}) => ({ ...base, from, side: 'stadium', region: null, clear: [], gameplay: false, lights: false, part: from !== stadium.file, ...extra });
+  // place's outside, from one of its files: its own stadium out, and nothing where the new stadium's pieces stand
+  const outsideOf = (from, extra = {}) => ({ ...base, from, side: 'surroundings', region: null, clear: sRegion || [], gameplay: false, lights: true, part: from !== place.file, ...extra });
 
   // where the stadium arena's stadium is: its stadium file first (newer arenas keep the stands
   // there), its main map, and parts that hold some of it (Champions Field's upper ring is in CS_OOB2)
@@ -214,22 +215,27 @@ function mergePlan(stadium, place, all = [], info = null) {
     note: `${place.name} has no stadium or sound file to load ${stadium.name}’s stadium in, so ${stadium.name}’s map is used with ${place.name}’s outside and sky around it; its light and fog are ${stadium.name}’s.`,
   };
 }
+// How merges are built: 2 since 0.4.13, when only strictly the stadium comes along.
+const MERGE_REV = 2;
+// A merge op built with older rules (more than the stadium could come along): to be built again.
+const oldMerge = (op) => !!op && op.kind === 'build' && (op.rev || 0) < MERGE_REV;
+
 // A short file name for a built part, the same every time for the same merge.
 function mapbuildName(seed, maxLen) {
   const hex = require('crypto').createHash('sha1').update(seed).digest('hex');
   return `BP${hex.slice(0, Math.max(4, Math.min(8, maxLen - 2)))}`;
 }
 // What mergePlan needs to know, read from the maps. open(file) returns an opened package
-// (mapbuild.open) or null.
+// (mapbuild.open) or null. stadiumRegion: the boxes of the stadium arena's stadium pieces (the
+// place arena clears them); the holders: which files have stadium pieces at all.
 function mergeInfo(stadium, place, open, mapbuild) {
   const holders = (a) => [a.file, a.field, ...a.parts.filter((p) => p.kind === 'surroundings').map((p) => p.file)].filter(Boolean);
-  const region = (a) => mapbuild.arenaRegion(holders(a).map(open).filter(Boolean));
-  const stadiumRegion = region(stadium), placeRegion = region(place);
-  const withStadium = (files, reg) => new Set(files.filter((f) => { const pkg = open(f); return pkg && mapbuild.stadiumPieces(pkg, reg) > 0; }).map((f) => f.toLowerCase()));
+  const stadiumRegion = mapbuild.stadiumBoxes(holders(stadium).map(open).filter(Boolean));
+  const withStadium = (files) => new Set(files.filter((f) => { const pkg = open(f); return pkg && mapbuild.stadiumPieces(pkg) > 0; }).map((f) => f.toLowerCase()));
   return {
-    stadiumRegion, placeRegion,
-    stadiumHolders: withStadium([stadium.file, ...stadium.parts.filter((p) => p.kind === 'surroundings' || p.kind === 'effects').map((p) => p.file)], stadiumRegion),
-    placeHolders: withStadium(place.parts.filter((p) => p.kind === 'surroundings').map((p) => p.file), placeRegion),
+    stadiumRegion, placeRegion: null,
+    stadiumHolders: withStadium([stadium.file, ...stadium.parts.filter((p) => p.kind === 'surroundings').map((p) => p.file)]),
+    placeHolders: withStadium(place.parts.filter((p) => p.kind === 'surroundings').map((p) => p.file)),
   };
 }
 
@@ -341,7 +347,7 @@ function everyMatchOps(chosen, place, arenas, changes = new Map(), label = chose
 // stadium, in the same arenas. Out of date when a merge was made, changed or reverted meanwhile, or
 // when it was written the old way (a copy of the arena: no place recorded).
 function sameEveryMatch(on, chosen, arenas, changes = new Map()) {
-  if (!on.length || on.some((o) => !o.place)) return false;
+  if (!on.length || on.some((o) => !o.place || oldMerge(o))) return false;
   const { stadium, targets } = everyMatchTargets(chosen, arenas, changes);
   const places = new Set(on.map((o) => o.place));
   return on.every((o) => o.chosen === chosen.id && o.stadium === stadium.id) && places.size === targets.length && targets.every((t) => places.has(t.id));
@@ -374,4 +380,4 @@ function snowPlan(arena, arenas, changes = new Map()) {
   return { how: 'version', op, play: [arena], snowy: snowy.name, online: false };
 }
 
-module.exports = { scanArenas, arenaName, partKind, mergePlan, mergeInfo, outsideParts, arenasUsing, everyStadium, everyMatchTargets, everyMatchOps, sameEveryMatch, oldEveryMatch, effectiveArena, mergedArenas, snowPlan, opReads, lockedFiles, lockedFor, lockedMessage };
+module.exports = { scanArenas, arenaName, partKind, mergePlan, mergeInfo, outsideParts, arenasUsing, everyStadium, everyMatchTargets, everyMatchOps, sameEveryMatch, oldEveryMatch, oldMerge, MERGE_REV, effectiveArena, mergedArenas, snowPlan, opReads, lockedFiles, lockedFor, lockedMessage };

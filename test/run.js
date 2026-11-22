@@ -487,7 +487,10 @@ function makeEngine(cooked, running = { value: false }) {
     // with what was read from the maps: each side gets the right stadium region to keep or to clear
     const R = [{ x0: -6000, x1: 6000, y0: -8000, y1: 8000 }], R2 = [{ x0: -5000, x1: 5000, y0: -7000, y1: 7000 }];
     p = arenas.mergePlan(beach, cs, all, { stadiumRegion: R, placeRegion: R2, stadiumHolders: new Set(['beach_p.upk']), placeHolders: new Set() });
-    assert.ok(p.ops.every((o) => (o.side === 'stadium' ? o.region === R : o.region === R2 && o.clear === R)));
+    // (the stadium side needs no region since 0.4.13: what is stadium is decided piece by piece; the
+    // place clears where the stadium's pieces stand)
+    assert.ok(p.ops.every((o) => (o.side === 'stadium' ? o.region === null && o.clear.length === 0 : o.clear === R)));
+    assert.ok(p.ops.every((o) => o.rev === arenas.MERGE_REV) && !arenas.oldMerge(p.ops[0]) && arenas.oldMerge({ kind: 'build' }));
     assert.ok(p.ops.some((o) => o.from === 'CS_OOB.upk'), 'an outside part is filtered even without stadium pieces, to clear the new stadium');
     // every file of one merge shares a group, so it is undone as one
     assert.ok(arenas.mergePlan(dusk, beach, all).ops.every((o) => o.group === 'merge:ff_dusk_p:beach_p' && o.label === 'Estadio Vida stadium in Salty Shores'));
@@ -760,6 +763,62 @@ function makeEngine(cooked, running = { value: false }) {
     assert.ok(!ops.some((o) => o.create && fs.existsSync(path.join(dir, o.gameFile))));
   }, !real);
 
+  test('strictly the stadium: what counts, piece by piece', () => {
+    const at = (x, y, z, ex, ey, ez) => ({ c: { x, y, z }, e: { x: ex, y: ey, z: ez } });
+    const mesh = (name, group, box) => ({ kind: 'mesh', name, group, box, known: true });
+    const yes = (it, why) => assert.ok(mapbuild.isStadium(it), why), no = (it, why) => assert.ok(!mapbuild.isStadium(it), why);
+    // on the pitch: the stadium, whatever the arena calls its packages
+    yes(mesh('Farm_G_FieldGrass', 'Farm_GRS_Assets.Meshes', at(0, 0, 0, 4096, 5120, 10)), 'Farmstead\'s pitch');
+    yes(mesh('Mall_Field_Walls_Hex', 'Mall_OOB_Assets_01.Meshes', at(4096, 0, 1000, 40, 5000, 1000)), 'an OOB package holding the field');
+    yes(mesh('Utopia_FieldRailingBushes_SM', 'UtopiaStadium_Assets_B.Meshes', at(4300, 0, 300, 100, 3000, 200)), 'planters on the field railing');
+    no(mesh('LombardyPoplar_Mini', 'Trees.Meshes', at(4500, 6000, 300, 300, 300, 600)), 'never a tree');
+    no(mesh('StadiumFogRing', 'EuroStadium_Assets.Meshes', at(0, 0, 500, 5000, 5000, 100)), 'never fog');
+    no(mesh('ConcreteBase', 'Park_Assets.Meshes', at(0, 0, -48, 5120, 6656, 16)), 'never the ground: the other arena keeps its own');
+    no(mesh('PA_Stadium_Ground_01', 'Paname.Meshes', at(0, 0, 0, 12000, 15000, 50)), 'not even ground named stadium');
+    // away from the pitch: only pieces named as stadium parts, never scenery, within reach
+    yes(mesh('Crowd_01', 'FutureStadium_Assets.Meshes', at(-5400, 15300, 6700, 10000, 5000, 3000)), 'the crowd');
+    yes(mesh('Stadium_Base', 'FutureStadium_Assets.Meshes', at(-1800, 11478, 2856, 29272, 11670, 6872)), 'the stadium itself, however big');
+    yes(mesh('Station_Stands_Upper', 'TrainStation_Assets.Meshes', at(0, 9000, 2000, 6000, 2000, 1500)), 'Urban Central\'s stands: its package name is no veto');
+    no(mesh('Utopia_Chair001', 'UtopiaStadium_Assets.Meshes', at(9000, 9000, 800, 50, 50, 60)), 'a food court chair is no stadium, whatever package it is in');
+    no(mesh('Mall_FoodCourt_Walls_01', 'Mall_Assets.Meshes', at(12000, 0, 2000, 3000, 3000, 2000)), 'walls of a mall are no stadium');
+    no(mesh('LeafyTrees_01_Combined', 'Stadium_Assets.Meshes', at(4285, -15828, 6548, 15174, 5783, 2740)), 'trees in a stadium package');
+    no(mesh('Woods_PowerLine_Light_01', 'Woods_Assets.Meshes', at(15000, 0, 3000, 200, 200, 2000)), 'a lamp post is no stadium');
+    no(mesh('Crowd_02', 'FutureStadium_Assets.Meshes', at(40000, 0, 2000, 3000, 3000, 2000)), 'too far out');
+    no(mesh('Stadium_Lights', 'X', at(0, 9000, 30000, 2000, 2000, 500)), 'too high up');
+    // and nothing whose place is not known, nor actors that are no mesh
+    no({ kind: 'mesh', name: 'Goal_Frame', group: 'X', box: null, known: false }, 'no position');
+    no({ kind: 'actor', cls: 'InterpActor', name: 'InterpActor_4', box: at(0, 0, 3000, 0, 0, 0), known: true }, 'a moving thing that is no mesh');
+  });
+
+  test('strictly the stadium, on real arenas: no scenery and nothing unplaced comes along, the pitch does', () => {
+    const keysFile = path.join(process.env.APPDATA || '', 'OpenW', 'keys.txt');
+    const keys = fs.existsSync(keysFile) ? upk.parseKeys(fs.readFileSync(keysFile, 'utf8')) : [];
+    const backups = path.join(process.env.APPDATA || '', 'OpenW', 'backups');
+    const original = (f) => (fs.existsSync(path.join(backups, f.toLowerCase())) ? path.join(backups, f.toLowerCase()) : path.join(real, f));
+    // whole words, as the game names things ("StreetSignArrows" has no tree in it)
+    const wordsOf = (t) => String(t).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z]+/);
+    const SCENERY = { test: (t) => wordsOf(t).some((w) => /^(trees?|poplars?|leafy|bush(es)?|rocks?|dunes?|mountains?|hills?|terrain|cliffs?|skyscrapers?|buildings?|city|statue|monorail|moai|planets?|clouds?|skydome|skysphere)$/.test(w)) };
+    let checked = 0;
+    for (const file of ['Park_Snowy_P.upk', 'Stadium_P.upk', 'Wasteland_GRS_P.upk', 'Mall_Day_P.upk', 'Woods_P.upk', 'UtopiaStadium_P.upk', 'Farm_P.upk', 'CS_Field.upk']) {
+      if (!fs.existsSync(path.join(real, file))) continue;
+      let P;
+      try { P = mapbuild.open(fs.readFileSync(original(file)), keys); } catch { continue; } // needs a key list
+      const log = [];
+      mapbuild.keepSide(P, 'stadium', { gameplay: false, lights: false, part: /_Field/.test(file) }, log);
+      const kept = log.filter((l) => l.kept && l.what !== 'GroundStaticMeshActor_TA');
+      // (planters on a field's own railing, like Utopia's, are part of its field)
+      const scenery = kept.filter((l) => SCENERY.test(`${l.name} ${l.group}`) && !/stadium/i.test(l.name)
+        && !(/bush/i.test(l.name) && /field/i.test(l.name) && Math.abs(l.x) <= 5600 && Math.abs(l.y) <= 7000));
+      assert.deepStrictEqual(scenery.map((l) => `${l.group}.${l.name}`), [], `${file}: scenery came along`);
+      assert.ok(kept.every((l) => l.x !== null), `${file}: a piece with no position came along`);
+      const onPitch = kept.filter((l) => Math.abs(l.x) <= 4096 && Math.abs(l.y) <= 5120);
+      assert.ok(onPitch.length >= 5, `${file}: only ${onPitch.length} pieces of the pitch`);
+      assert.ok(!kept.some((l) => /^(VehiclePickup|Goal|PlayerStart|StaticLightCollectionActor|ExponentialHeightFog|SkyLight)/.test(l.what)), `${file}: gameplay, lights or fog came along`);
+      checked++;
+    }
+    assert.ok(checked >= 3, `${checked} arenas checked`);
+  }, !real);
+
   test('a map is taken apart and put back together without changing anything else', () => {
     const keysFile = path.join(process.env.APPDATA || '', 'OpenW', 'keys.txt');
     const file = path.join(real || '', 'Farm_GRS_P.upk');
@@ -780,8 +839,10 @@ function makeEngine(cooked, running = { value: false }) {
     // no gameplay and no lights come along with the outside; sky and fog do
     assert.ok(log.filter((l) => /^(VehiclePickup|Goal|PlayerStart|StaticLightCollectionActor)/.test(l.what)).every((l) => !l.kept));
     assert.ok(log.some((l) => /SkySphere/.test(l.name) && l.kept));
-    // and its stadium is gone: nothing kept sits on the pitch
-    assert.ok(log.filter((l) => l.kept && l.what === 'mesh' && l.x !== null && !/sky|fog|sun/i.test(l.name)).every((l) => Math.abs(l.x) > 4096 || Math.abs(l.y) > 5120));
+    // and its stadium is gone: nothing kept sits on the pitch (a combined mesh centred on it but
+    // spreading far past it, like all the farm's chickens in one, stands around it)
+    assert.ok(log.filter((l) => l.kept && l.what === 'mesh' && l.x !== null && !/sky|fog|sun/i.test(l.name)).every((l) => Math.abs(l.x) > 4096 || Math.abs(l.y) > 5120 || l.w > 6000 || l.h > 7000));
+    assert.ok(log.some((l) => !l.kept && /field|goal/i.test(l.name)), 'its own field and goals are hidden');
     const built = mapbuild.repack(S, Buffer.from(upk.DEFAULT_KEYS[0], 'hex'), { Farm_SFX: 'BPabcd12' });
     const t2 = upk.readTables(built, keys);
     assert.ok(t2.names.includes('BPabcd12') && !t2.names.some((n) => /^farm_sfx$/i.test(n)));

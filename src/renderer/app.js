@@ -648,7 +648,7 @@ views.lab = () => {
           onclick: () => busy('every', () => run(() => api('everyMatch', lab.every), (r) => (r.queued ? `Queued: ${every.stadium}’s stadium goes into ${plural(r.arenas, 'arena')} when Rocket League closes.` : `Every match now shows ${every.stadium}’s stadium (${plural(r.arenas, 'arena')}).`))) },
         lab.busy === 'every' ? `Working…${writing}` : !current ? 'Use in every match' : same ? 'Update every match' : 'Switch to this stadium'),
         current && h('button', { class: 'btn', onclick: () => run(() => api('everyMatchOff'), S.running ? 'Turning it off when the game closes.' : 'Your arenas are back to normal.') }, 'Turn off')),
-      same && stale && h('p', { class: 'small' }, 'An arena changed since this was turned on (a merge was made or reverted), so some arenas are out of date. Update every match brings them in line.'),
+      same && stale && h('p', { class: 'small' }, 'Some arenas are out of date: a merge was made or reverted since this was turned on, or they were built before only the stadium came along. Update every match brings them in line.'),
       every && h('p', { class: 'small' }, every.merged ? `Your merge: every match shows ${every.stadium}’s stadium, the stadium of ${every.label}.` : `Every match shows ${every.stadium}’s stadium.`),
       every && every.locked && keyHint(every.locked),
       every && !every.locked && keySkipped.length > 0 && keyHint(`${keySkipped.join(', ')} ${keySkipped.length === 1 ? 'keeps its' : 'keep their'} own look: OpenW cannot open ${keySkipped.length === 1 ? 'it' : 'them'} with the keys it has. A newer key list in Settings, under Item pictures and keys, opens them.`, true),
@@ -688,6 +688,7 @@ views.lab = () => {
     rows.set(id, row);
   };
   const arenaChange = (op) => op && op.category === 'map' && (op.kind === 'copy' || op.kind === 'build') && op.group !== 'everymatch';
+  const oldBuild = (op) => op.kind === 'build' && (op.rev || 0) < 2 && /^merge:/.test(op.group || '');
   for (const q of S.engine.queue) if (arenaChange(q.op)) add(q.op, q.key, true);
   for (const r of S.engine.active) if (arenaChange(r.op)) add(r.op, r.key, false);
   const mine = [...rows.values()];
@@ -697,6 +698,8 @@ views.lab = () => {
     mine.length ? h('div', { class: 'list' }, mine.map((row) => h('div', { class: 'item' }, art(row.op.label, 'maps'),
       h('div', { class: 'grow' }, h('b', {}, row.op.label), h('div', { class: 'small' }, playHint(shownIn(row.op.gameFile)) || row.op.gameFile)),
       row.queued && h('span', { class: 'tag' }, 'Queued'),
+      // a merge built before only the stadium came along (0.4.13): built again in one click
+      oldBuild(row.op) && !row.queued && h('button', { class: 'btn sm primary', title: 'Built before only the stadium came along: build it again with the strict rules', onclick: () => busy('merge', () => run(() => api('mergeArenas', ...row.op.group.split(':').slice(1)), 'Rebuilt: only the stadium comes along.')) }, 'Rebuild'),
       h('button', { class: 'btn sm', onclick: () => run(() => undo(row), S.running ? 'Undone when the game closes.' : 'Original arena restored.') }, row.queued ? 'Cancel' : 'Revert'))))
       : h('p', { class: 'muted' }, 'Nothing merged or snowed. Your arenas are original.')));
   return root;

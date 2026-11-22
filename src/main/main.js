@@ -318,6 +318,24 @@ function everyMatchStale(list, changes) {
 }
 // "Same arena every match" as written before 0.4.11 (a copy of another arena over each arena
 // file) disconnects every online match in those arenas: it is put back, with a line for the page.
+// Merges built before 0.4.13 could bring pieces of the stadium arena's surroundings along (trees,
+// rocks, buildings): each is built again with the strict stadium rules. While the game is closed
+// only. Every match is not built again here (it takes minutes): its tile says to update it.
+async function rebuildOldMerges() {
+  const groups = new Map();
+  for (const r of engine.list().active) {
+    if (r.op.group && r.op.group.startsWith('merge:') && arenas.oldMerge(r.op)) groups.set(r.op.group, r.op.label.replace(/, snowy$/, ''));
+  }
+  const done = [];
+  for (const [group, label] of groups) {
+    const [, stadiumId, placeId] = group.split(':');
+    try { await api.mergeArenas(stadiumId, placeId); done.push(label); } catch (e) { logError(`rebuild ${group}`, e); }
+  }
+  const every = engine.list().active.some((r) => r.op.group === 'everymatch' && arenas.oldMerge(r.op));
+  return [done.length ? `Rebuilt so only the stadium comes along: ${done.join(', ')}.` : '',
+    every ? 'Same stadium every match was built with the old rules: press Update every match in Map Merge.' : ''].filter(Boolean).join(' ');
+}
+
 async function retireOldEveryMatch() {
   const { active, queue } = engine.list();
   const old = active.filter((r) => arenas.oldEveryMatch(r.op)), oldQueued = queue.filter((q) => q.op && arenas.oldEveryMatch(q.op));
@@ -886,7 +904,7 @@ async function poll() {
     // anything an older version wrote with the wrong key is rebuilt as soon as the game closes
     const repaired = engine.repairKeys();
     if (repaired.length) notice = `Rebuilt ${repaired.length === 1 ? 'a change' : `${repaired.length} changes`} that an earlier version wrote incorrectly: ${repaired.join(', ')}.`;
-    notice = [notice, await upgradeSwaps(), await retireOldEveryMatch()].filter(Boolean).join(' ');
+    notice = [notice, await upgradeSwaps(), await retireOldEveryMatch(), await rebuildOldMerges().catch((e) => { logError('rebuild merges', e); return ''; })].filter(Boolean).join(' ');
   }
   send('state', { state: snapshot(), flushed, notice });
 }
@@ -968,6 +986,7 @@ app.whenReady().then(async () => {
     else syncHides().catch((e) => logError('hide', e));
     // (while the game runs, the old every-match files are put back as soon as it closes)
     try { upgraded = [upgraded, await retireOldEveryMatch()].filter(Boolean).join(' '); } catch (e) { logError('every match', e); }
+    if (!running) { try { upgraded = [upgraded, await rebuildOldMerges()].filter(Boolean).join(' '); } catch (e) { logError('rebuild merges', e); } }
   }
 
   protocol.handle('thumb', (request) => {
