@@ -1,7 +1,7 @@
 {
   "name": "openw",
   "productName": "OpenW",
-  "version": "0.4.16",
+  "version": "0.4.17",
   "description": "Free, open-source cosmetic mod manager for Rocket League: item swaps, workshop maps, map merge, presets, overlay, and a Steam-style controller remapper.",
   "main": "src/main/main.js",
   "license": "MIT",
