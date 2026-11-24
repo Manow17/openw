@@ -736,6 +736,42 @@ function makeEngine(cooked, running = { value: false }) {
     assert.deepStrictEqual(id(out), id(buf));
   }, !real);
 
+  test('a map the game\'s server loads too keeps every actor in its level: what a hidden one shows is emptied (online matches crashed on the rest)', () => {
+    const keysFile = path.join(process.env.APPDATA || '', 'OpenW', 'keys.txt');
+    const keys = fs.existsSync(keysFile) ? upk.parseKeys(fs.readFileSync(keysFile, 'utf8')) : [];
+    const backups = path.join(process.env.APPDATA || '', 'OpenW', 'backups');
+    const original = (f) => (fs.existsSync(path.join(backups, f.toLowerCase())) ? path.join(backups, f.toLowerCase()) : path.join(real, f));
+    const open = (f) => { try { return mapbuild.open(fs.readFileSync(original(f)), keys); } catch { return null; } };
+    // Drift Woods (Night) with Forbidden Temple's stadium file: its own pitch went with four lens
+    // flares and an InterpActor (always sent online); the private match loaded, then crashed
+    const pairs = [[['CHN_Stadium_Field.upk'], 'Woods_Night_P.upk'], [['UtopiaStadium_Snow_P.upk'], 'Farm_GRS_P.upk'], [['Stadium_P.upk'], 'Park_P.upk']];
+    let checked = 0;
+    for (const [sFiles, file] of pairs) {
+      const A = open(file), B = open(file);
+      if (!A || !sFiles.every((f) => open(f))) continue;
+      const fp = (files) => { const f = mapbuild.footprint([]); for (const x of files) mapbuild.footprint([open(x)], f); return f; };
+      const actors = (P) => { const { d, at, count } = mapbuild.levelActors(P); return Array.from({ length: count }, (_, i) => d.readInt32LE(at + i * 4)); };
+      const before = actors(A);
+      const items = mapbuild.inventory(A), log = [];
+      mapbuild.keepSide(B, 'surroundings', { own: fp([file]), clear: fp(sFiles), gameplay: true, part: true, lights: true, keepActors: true }, log);
+      const built = mapbuild.open(mapbuild.repack(B, B.t.pkg.key), keys);
+      assert.deepStrictEqual(actors(built), before, `${file}: an actor left its level`);
+      // each hidden actor that showed a mesh shows none now, and nothing kept changed
+      const after = new Map(mapbuild.inventory(built).filter((it) => it.kind === 'actor').map((it) => [it.name, it]));
+      let hidden = 0;
+      items.forEach((it, i) => {
+        if (it.kind !== 'actor' || !it.mesh) return;
+        const now = after.get(it.name);
+        assert.ok(now, `${file}: ${it.name} is gone`);
+        if (log[i].kept) assert.strictEqual(now.mesh, it.mesh, `${file}: ${it.name} changed`);
+        else { assert.ok(!now.mesh, `${file}: ${it.name} still shows ${it.mesh}`); hidden++; }
+      });
+      if (file === 'Woods_Night_P.upk') assert.ok(hidden >= 2, `${hidden} hidden in place`);
+      checked++;
+    }
+    assert.ok(checked >= 1, `${checked} maps checked`);
+  }, !real);
+
   test('same stadium every match, built from real arenas: each arena keeps its own id and numbering and loads the stadium', async () => {
     const backups = path.join(process.env.APPDATA || '', 'OpenW', 'backups');
     const original = (f) => (fs.existsSync(path.join(backups, f.toLowerCase())) ? path.join(backups, f.toLowerCase()) : path.join(real, f));
@@ -754,6 +790,9 @@ function makeEngine(cooked, running = { value: false }) {
     const open = (f) => { const k = f.toLowerCase(); if (!opened.has(k)) { let p = null; try { p = mapbuild.open(fs.readFileSync(path.join(dir, f)), []); } catch { /* left out */ } opened.set(k, p); } return opened.get(k); };
     const id = (file) => { const b = fs.readFileSync(file); const s = upk.parseSummary(b); const o = s.guidOffset + 16, n = b.readInt32LE(o); return `${b.subarray(s.guidOffset, o).toString('hex')}|${b.subarray(o, o + 4 + n * 12).toString('hex')}|${s.exportCount}`; };
     const before = Object.fromEntries([park, aqua].map((a) => [a.id, id(path.join(dir, a.file))]));
+    // the level's actor list: online, the server sends actors of the arena's own map by their place in it
+    const actors = (file) => { const P = mapbuild.open(fs.readFileSync(file), []); const { d, at, count } = mapbuild.levelActors(P); return Array.from({ length: count }, (_, i) => d.readInt32LE(at + i * 4)).join(','); };
+    const actorsBefore = Object.fromEntries([park, aqua].map((a) => [a.id, actors(path.join(dir, a.file))]));
     const { targets } = arenas.everyMatchTargets(chosen, sandbox);
     assert.deepStrictEqual(targets.map((a) => a.id).sort(), ['park_p', 'underwater_p']);
     const ops = [];
@@ -763,6 +802,7 @@ function makeEngine(cooked, running = { value: false }) {
     for (const place of [park, aqua]) {
       const file = path.join(dir, place.file);
       assert.strictEqual(id(file), before[place.id], `${place.name} keeps its package id and object numbering`);
+      assert.strictEqual(actors(file), actorsBefore[place.id], `${place.name} keeps every actor in its level`);
       // its stadium or sound part now loads a file OpenW added, holding DFH Stadium's stadium
       const names = upk.readPackageFile(file).names.map((n) => n.text);
       const added = ops.filter((o) => o.create && o.place === place.id && o.side === 'stadium');

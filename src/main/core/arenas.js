@@ -235,8 +235,10 @@ function mergePlan(stadium, place, all = [], info = null) {
 // the stadium is read from the real shapes of its pieces (its footprint) and the other arena
 // clears everything that stands where it stands; 5 since 0.4.16, when the stadium keeps the light
 // baked into it (no lamp of the other arena lights it live) and the other arena loses only its own
-// stadium, its pitch where the new one brings a piece, and what stands in the stadium that loads.
-const MERGE_REV = 5;
+// stadium, its pitch where the new one brings a piece, and what stands in the stadium that loads;
+// 6 since 0.4.17, when the other arena's main map keeps every actor in its level (what a hidden one
+// shows is emptied instead), since online matches crashed on actors the server sends.
+const MERGE_REV = 6;
 // A merge op built with older rules (more than the stadium could come along): to be built again.
 const oldMerge = (op) => !!op && op.kind === 'build' && (op.rev || 0) < MERGE_REV;
 

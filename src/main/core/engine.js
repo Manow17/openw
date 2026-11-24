@@ -189,6 +189,9 @@ class Engine {
     const opts = {
       gameplay: op.gameplay === undefined ? op.side === 'stadium' : !!op.gameplay, part: !!op.part,
       lights: op.lights === undefined ? null : !!op.lights, unlit: !!op.unlit,
+      // a file that keeps its own name is one the game's server loads too in an online match: every
+      // actor stays in its level (mapbuild.hideParts)
+      keepActors: !op.create,
     };
     const st = fs.statSync(from);
     const sig = JSON.stringify([from, st.size, st.mtimeMs, op.side, opts, op.ownFiles || null, op.clearFiles || op.clear || null]);

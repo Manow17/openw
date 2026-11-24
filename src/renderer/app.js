@@ -688,7 +688,7 @@ views.lab = () => {
     rows.set(id, row);
   };
   const arenaChange = (op) => op && op.category === 'map' && (op.kind === 'copy' || op.kind === 'build') && op.group !== 'everymatch';
-  const oldBuild = (op) => op.kind === 'build' && (op.rev || 0) < 5 && /^merge:/.test(op.group || ''); // MERGE_REV in arenas.js
+  const oldBuild = (op) => op.kind === 'build' && (op.rev || 0) < 6 && /^merge:/.test(op.group || ''); // MERGE_REV in arenas.js
   for (const q of S.engine.queue) if (arenaChange(q.op)) add(q.op, q.key, true);
   for (const r of S.engine.active) if (arenaChange(r.op)) add(r.op, r.key, false);
   const mine = [...rows.values()];

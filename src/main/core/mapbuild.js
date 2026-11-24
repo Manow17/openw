@@ -236,6 +236,40 @@ function channelsOf(P, cd) {
   return sub ? sub.props.filter((p) => p.type === 'BoolProperty' && value[p.at - 1]).map((p) => p.name) : null;
 }
 
+/* ---------- online ---------- */
+
+// In an online match (a private match too) the game's server loads the arena's own main map and
+// keeps many of its actors in step with every player (InterpActors are always sent, whatever they
+// show). An actor taken off the player's level is still in the file, never set up, and the first
+// update the server sends for it crashed the game once the match had loaded (Drift Woods (Night)
+// with Forbidden Temple's stadium, 0.4.16). So in a file the server loads too, every actor stays
+// in its level and only what it shows is emptied: the meshes, particle and lens flare templates
+// and decal materials of its components, each in place.
+const SHOWN = new Set(['StaticMesh', 'SkeletalMesh', 'Template', 'DecalMaterial']);
+// Actors the server never sends (static ones): these can still be taken off when nothing they
+// show can be emptied.
+const NEVER_SENT = /^(StaticMeshActor|DecalActor|Note)$/;
+// Empties what an actor shows (d, r: its object and properties). Returns how many references.
+function hideParts(P, d, r) {
+  const list = prop(r, 'Components');
+  if (!list || list.type !== 'ArrayProperty') return 0;
+  const n = d.readInt32LE(list.at);
+  let done = 0;
+  for (let k = 0; k < n && list.at + 8 + k * 4 <= d.length; k++) {
+    const ci = d.readInt32LE(list.at + 4 + k * 4);
+    if (ci <= 0 || ci > P.t.exports.length) continue; // a component of its class, not of this map
+    const cd = P.obj(P.t.exports[ci - 1]);
+    const cr = tagged(P, cd);
+    if (!cr) continue;
+    for (const p of cr.props) {
+      if (!SHOWN.has(p.name) || p.type !== 'ObjectProperty' || cd.readInt32LE(p.at) === 0) continue;
+      cd.writeInt32LE(0, p.at);
+      done++;
+    }
+  }
+  return done;
+}
+
 /* ---------- where things are ---------- */
 
 // Placement of a component: Translation, Rotation (yaw is what matters for a stadium) and scale.
@@ -316,7 +350,13 @@ function inventory(P) {
       continue;
     }
     const loc = vec(d, prop(r, 'Location'));
-    const item = { kind: 'actor', cls: actor.cls, name: actor.name, box: loc ? { c: loc, e: { x: 0, y: 0, z: 0 } } : null, known: !!loc, hide: remove };
+    // (keep: the actor stays in its level and only what it shows goes, for a file the game's server
+    // loads too; one the server never sends goes all the same when nothing it shows can be emptied)
+    const hide = (keep = false) => {
+      if (!keep) return remove();
+      if (!hideParts(P, d, r) && NEVER_SENT.test(actor.cls)) remove();
+    };
+    const item = { kind: 'actor', cls: actor.cls, name: actor.name, box: loc ? { c: loc, e: { x: 0, y: 0, z: 0 } } : null, known: !!loc, hide };
     item.shape = shape;
     // a mesh placed on its own (StaticMeshActor, InterpActor, ...): which mesh, and where, so it is
     // judged by what it is
@@ -551,7 +591,9 @@ const LIGHTS = /^(StaticLightCollectionActor|.*Light)$/;
  * package of a merge has them.
  * Returns counts; `log` (an array) gets one line per thing.
  */
-function keepSide(P, side, { clear = null, own = null, gameplay = side === 'stadium', part = false, lights = null, unlit = false } = {}, log = null) {
+// keepActors: the game's server loads this file too (it keeps its own name), so no actor leaves its
+// level: what a hidden actor shows is emptied instead (hideParts)
+function keepSide(P, side, { clear = null, own = null, gameplay = side === 'stadium', part = false, lights = null, unlit = false, keepActors = false } = {}, log = null) {
   const keepLights = lights === null ? side === 'stadium' || gameplay : !!lights;
   const stats = { kept: 0, hidden: 0 };
   if (!own && side !== 'empty') own = footprint([P]);
@@ -597,7 +639,7 @@ function keepSide(P, side, { clear = null, own = null, gameplay = side === 'stad
         if (it.move && it.move(-GROUND_DROP)) stats.lowered = (stats.lowered || 0) + 1;
       }
     }
-    if (!keep) it.hide();
+    if (!keep) it.hide(keepActors);
     else if (unlit && it.unlight) { const done = it.unlight(); stats[done ? 'unlit' : 'lit'] = (stats[done ? 'unlit' : 'lit'] || 0) + 1; }
     stats[keep ? 'kept' : 'hidden']++;
     if (log) log.push({ what: it.kind === 'actor' ? it.cls : it.kind, name: it.mesh || it.name, group: it.group || '', x: it.box ? Math.round(it.box.c.x) : null, y: it.box ? Math.round(it.box.c.y) : null, w: it.box ? Math.round(it.box.e.x) : null, h: it.box ? Math.round(it.box.e.y) : null, z: it.box ? Math.round(it.box.c.z) : null, d: it.box ? Math.round(it.box.e.z) : null, kept: keep });
